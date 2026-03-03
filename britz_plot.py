@@ -27,6 +27,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker as ticker
 from matplotlib.lines import Line2D
+import mpl_toolkits.axisartist.floating_axes as FA
+import mpl_toolkits.axisartist.grid_finder as GF
 import netCDF4 as nc
 import numpy as np
 import pandas as pd
@@ -1713,6 +1715,410 @@ def export_leaf_temp_statistics_csv(all_stats, outdir):
 
 
 # =============================================================================
+# Phase 3: Comprehensive statistics, Taylor diagram, and heatmap
+# =============================================================================
+
+class TaylorDiagram(object):
+    """Taylor diagram using mpl_toolkits.axisartist floating axes.
+
+    Based on ycopin's implementation (MIT license, DOI: 10.5281/zenodo.5548061).
+    """
+
+    def __init__(self, refstd, fig=None, rect=111, label='_', srange=(0, 1.5)):
+        self.refstd = refstd
+        tr = PolarAxes.PolarTransform()
+
+        # Correlation labels
+        rlocs = np.array([0, 0.2, 0.4, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1])
+        tlocs = np.arccos(rlocs)
+        gl1 = GF.FixedLocator(tlocs)
+        tf1 = GF.DictFormatter(dict(zip(tlocs, map(str, rlocs))))
+
+        # Standard deviation axis
+        gl2 = GF.MaxNLocator(nbins=6)
+
+        ghelper = FA.GridHelperCurveLinear(
+            tr,
+            extremes=(0, np.pi / 2, srange[0], srange[1]),
+            grid_locator1=gl1, tick_formatter1=tf1,
+            grid_locator2=gl2,
+        )
+
+        if fig is None:
+            fig = plt.gcf()
+
+        ax = FA.FloatingSubplot(fig, rect, grid_helper=ghelper)
+        fig.add_subplot(ax)
+
+        # Adjust axes
+        ax.axis["top"].set_axis_direction("bottom")
+        ax.axis["top"].toggle(ticklabels=True, label=True)
+        ax.axis["top"].major_ticklabels.set_axis_direction("top")
+        ax.axis["top"].label.set_axis_direction("top")
+        ax.axis["top"].label.set_text("Correlation")
+
+        ax.axis["left"].set_axis_direction("bottom")
+        ax.axis["left"].label.set_text("Normalized standard deviation")
+
+        ax.axis["right"].set_axis_direction("top")
+        ax.axis["right"].toggle(ticklabels=True)
+        ax.axis["right"].major_ticklabels.set_axis_direction(
+            "bottom" if srange[0] == 0 else "left"
+        )
+
+        ax.axis["bottom"].toggle(ticklabels=False, label=False)
+
+        self._ax = ax
+        self.ax = ax.get_aux_axes(tr)
+
+        # Plot reference point
+        self.ax.plot([0], self.refstd, 'k*', ms=12, label=label, clip_on=False)
+
+        # Collect sample points for contour drawing
+        self.samplePoints = [
+            self.ax.plot([0], self.refstd, 'k*', ms=12, clip_on=False)[0]
+        ]
+
+    def add_sample(self, stddev, corrcoef, *args, **kwargs):
+        l, = self.ax.plot(np.arccos(corrcoef), stddev, *args, **kwargs)
+        self.samplePoints.append(l)
+        return l
+
+    def add_contours(self, levels=5, **kwargs):
+        rs, ts = np.meshgrid(
+            np.linspace(0, self.ax.get_ylim()[1], 100),
+            np.linspace(0, np.pi / 2, 100),
+        )
+        # Centered RMS difference
+        rms = np.sqrt(self.refstd**2 + rs**2
+                       - 2 * self.refstd * rs * np.cos(ts))
+        contours = self.ax.contour(ts, rs, rms, levels, **kwargs)
+        return contours
+
+    def add_grid(self, *args, **kwargs):
+        self._ax.grid(*args, **kwargs)
+
+
+# Need PolarAxes import for TaylorDiagram
+from matplotlib.projections import PolarAxes
+
+
+def build_statistics_table(all_comparisons):
+    """Aggregate all Phase 1 and Phase 2 comparison statistics into a DataFrame.
+
+    Parameters
+    ----------
+    all_comparisons : list of dict
+        Each dict has: variable, station_or_sensor, depth_or_position,
+        rmse, mbe, r, kge, nse, n_valid, and optionally r_beta, r_gamma,
+        obs_std, sim_std.
+
+    Returns
+    -------
+    stats_df : pandas.DataFrame
+        One row per comparison pair with all metrics.
+    """
+    if not all_comparisons:
+        return pd.DataFrame()
+
+    stats_df = pd.DataFrame(all_comparisons)
+
+    # Ensure column order
+    cols = ["variable", "station_or_sensor", "depth_or_position",
+            "rmse", "mbe", "r", "kge", "nse", "n_valid"]
+    extra = [c for c in ["r_beta", "r_gamma", "obs_std", "sim_std"]
+             if c in stats_df.columns]
+    stats_df = stats_df[[c for c in cols + extra if c in stats_df.columns]]
+
+    return stats_df
+
+
+def plot_taylor_diagram(all_comparisons, plot_cfg, outdir):
+    """Taylor diagram showing all variables with normalized std dev and CRMSD.
+
+    Parameters
+    ----------
+    all_comparisons : list of dict
+        Each dict has: variable, station_or_sensor, depth_or_position,
+        r, obs_std, sim_std.
+    plot_cfg : dict
+        Plot settings.
+    outdir : str
+        Output directory.
+    """
+    # Filter to valid entries
+    valid = [c for c in all_comparisons
+             if not np.isnan(c.get("r", np.nan))
+             and not np.isnan(c.get("obs_std", np.nan))
+             and not np.isnan(c.get("sim_std", np.nan))
+             and c.get("obs_std", 0) > 0]
+
+    if not valid:
+        print("  Skipping Taylor diagram — no valid comparisons.")
+        return
+
+    # Variable type -> color mapping
+    var_colors = {
+        "soil_moisture": TOL_BLUE,
+        "soil_temp": TOL_CYAN,
+        "air_temp": TOL_GREEN,
+        "leaf_temp": TOL_RED,
+    }
+
+    # Station/sensor -> marker mapping
+    marker_pool = ["o", "s", "^", "D", "v", "P", "*", "X"]
+    station_markers = {}
+    marker_idx = 0
+
+    fig_w = mm_to_inches(plot_cfg["figure_width_mm"])
+    fig = plt.figure(figsize=(fig_w, fig_w * 0.85))
+
+    # Reference std = 1.0 (normalized)
+    dia = TaylorDiagram(1.0, fig=fig, rect=111, label="Observations",
+                        srange=(0, 1.65))
+
+    legend_handles = []
+    legend_labels = []
+    seen_var_colors = set()
+    seen_markers = set()
+
+    for comp in valid:
+        variable = comp["variable"]
+        station = str(comp["station_or_sensor"])
+        r_val = comp["r"]
+        obs_std = comp["obs_std"]
+        sim_std = comp["sim_std"]
+
+        # Normalize std dev by observed std dev
+        norm_std = sim_std / obs_std
+
+        color = var_colors.get(variable, TOL_GREY)
+
+        if station not in station_markers:
+            station_markers[station] = marker_pool[marker_idx % len(marker_pool)]
+            marker_idx += 1
+        marker = station_markers[station]
+
+        dia.add_sample(norm_std, r_val, marker=marker, ms=7,
+                       color=color, mec=color, mew=0.5, clip_on=False,
+                       zorder=5)
+
+        # Legend entries for variable color
+        if variable not in seen_var_colors:
+            seen_var_colors.add(variable)
+            label_map = {
+                "soil_moisture": "Soil moisture",
+                "soil_temp": "Soil temperature",
+                "air_temp": "Air temperature",
+                "leaf_temp": "Leaf temperature",
+            }
+            h = Line2D([0], [0], marker="o", color="w", markerfacecolor=color,
+                       ms=7, label=label_map.get(variable, variable))
+            legend_handles.append(h)
+            legend_labels.append(label_map.get(variable, variable))
+
+        # Legend entries for station marker
+        if station not in seen_markers:
+            seen_markers.add(station)
+            h = Line2D([0], [0], marker=marker, color="w",
+                       markerfacecolor="gray", ms=7, label=station)
+            legend_handles.append(h)
+            legend_labels.append(station)
+
+    # Add centered RMSE contours
+    contours = dia.add_contours(levels=5, colors="0.5", linewidths=0.5,
+                                 linestyles="--")
+    dia.ax.clabel(contours, inline=True, fontsize=6, fmt="%.1f")
+
+    # Add std dev = 1.0 reference arc
+    theta = np.linspace(0, np.pi / 2, 100)
+    dia.ax.plot(theta, np.ones_like(theta), "k--", lw=0.8, alpha=0.5)
+
+    dia.add_grid(True, linestyle=":", alpha=0.3)
+
+    # Build legend
+    fig.legend(handles=legend_handles, labels=legend_labels,
+               loc="lower right", fontsize=plot_cfg.get("legend_size", 7.5),
+               frameon=True, fancybox=False, edgecolor="#CCCCCC",
+               ncol=2, bbox_to_anchor=(0.95, 0.05))
+
+    fig.suptitle("Taylor Diagram: All Variables (Normalized)",
+                 fontsize=plot_cfg.get("title_size", 10))
+    fig.tight_layout(rect=[0, 0.08, 1, 0.95])
+    _save_figure(fig, outdir, "taylor_diagram", plot_cfg)
+
+
+def plot_statistics_heatmap(stats_table, plot_cfg, outdir):
+    """Heatmap of KGE values across all variable/station/depth combinations.
+
+    Parameters
+    ----------
+    stats_table : pandas.DataFrame
+        Statistics table from build_statistics_table.
+    plot_cfg : dict
+        Plot settings.
+    outdir : str
+        Output directory.
+    """
+    if stats_table.empty or "kge" not in stats_table.columns:
+        print("  Skipping statistics heatmap — no data.")
+        return
+
+    # Build row label: variable + station_or_sensor
+    stats_table = stats_table.copy()
+    stats_table["row_label"] = (stats_table["variable"].astype(str) + " | "
+                                 + stats_table["station_or_sensor"].astype(str))
+    stats_table["col_label"] = stats_table["depth_or_position"].astype(str)
+
+    # Pivot to matrix
+    pivot = stats_table.pivot_table(
+        values="kge", index="row_label", columns="col_label", aggfunc="first"
+    )
+
+    if pivot.empty:
+        print("  Skipping statistics heatmap — empty pivot.")
+        return
+
+    fig_w = mm_to_inches(plot_cfg["figure_width_mm"])
+    n_rows, n_cols = pivot.shape
+    fig_h = max(fig_w * 0.4, mm_to_inches(30 + n_rows * 12))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    # Diverging colormap: red (poor) -> white (neutral) -> green (good)
+    from matplotlib.colors import TwoSlopeNorm
+    vmin = min(pivot.min().min(), -0.41)
+    vmax = max(pivot.max().max(), 1.0)
+    if np.isnan(vmin):
+        vmin = -1.0
+    if np.isnan(vmax):
+        vmax = 1.0
+    norm = TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
+
+    from matplotlib.colors import LinearSegmentedColormap
+    cmap = LinearSegmentedColormap.from_list(
+        "kge_diverging",
+        [(0.0, TOL_RED), (0.5, "#FFFFFF"), (1.0, TOL_GREEN)],
+    )
+
+    data = pivot.values.astype(float)
+    im = ax.imshow(data, cmap=cmap, norm=norm, aspect="auto")
+
+    # Annotate cells
+    for i in range(n_rows):
+        for j in range(n_cols):
+            val = data[i, j]
+            if not np.isnan(val):
+                text_color = "white" if abs(val) > 0.7 else "black"
+                ax.text(j, i, f"{val:.2f}", ha="center", va="center",
+                        fontsize=plot_cfg.get("tick_size", 8) * 0.9,
+                        color=text_color)
+
+    ax.set_xticks(np.arange(n_cols))
+    ax.set_xticklabels(pivot.columns, rotation=45, ha="right",
+                        fontsize=plot_cfg.get("tick_size", 8))
+    ax.set_yticks(np.arange(n_rows))
+    ax.set_yticklabels(pivot.index,
+                        fontsize=plot_cfg.get("tick_size", 8))
+
+    ax.set_xlabel("Depth / Position")
+    ax.set_ylabel("Variable | Station/Sensor")
+    ax.set_title("KGE Performance Heatmap",
+                  fontsize=plot_cfg.get("title_size", 10))
+
+    cbar = fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
+    cbar.set_label("KGE", fontsize=plot_cfg.get("label_size", 9))
+
+    # Reference line at KGE = -0.41 (better than mean, Knoben et al. 2019)
+    cbar.ax.axhline(y=-0.41, color="black", linewidth=1.0, linestyle="--")
+    cbar.ax.text(0.5, -0.41, " -0.41", transform=cbar.ax.get_yaxis_transform(),
+                 fontsize=6, va="center")
+
+    fig.tight_layout()
+    _save_figure(fig, outdir, "statistics_heatmap", plot_cfg)
+
+
+def export_statistics_latex(stats_df, outdir):
+    """Export statistics table as LaTeX.
+
+    Parameters
+    ----------
+    stats_df : pandas.DataFrame
+        Statistics table.
+    outdir : str
+        Output directory.
+    """
+    if stats_df.empty:
+        print("  No statistics to export as LaTeX.")
+        return
+
+    outpath = Path(outdir) / "britz_comparison_statistics.tex"
+
+    # Format numeric columns
+    fmt_df = stats_df.copy()
+    for col in ["rmse", "mbe"]:
+        if col in fmt_df.columns:
+            fmt_df[col] = fmt_df[col].apply(
+                lambda x: f"{x:.4f}" if not np.isnan(x) else "--")
+    for col in ["r", "kge", "nse"]:
+        if col in fmt_df.columns:
+            fmt_df[col] = fmt_df[col].apply(
+                lambda x: f"{x:.3f}" if not np.isnan(x) else "--")
+    if "n_valid" in fmt_df.columns:
+        fmt_df["n_valid"] = fmt_df["n_valid"].apply(
+            lambda x: str(int(x)) if not np.isnan(x) else "--")
+
+    # Select display columns
+    display_cols = ["variable", "station_or_sensor", "depth_or_position",
+                    "rmse", "mbe", "r", "kge", "nse", "n_valid"]
+    display_cols = [c for c in display_cols if c in fmt_df.columns]
+    fmt_df = fmt_df[display_cols]
+
+    # Column headers for LaTeX
+    col_headers = {
+        "variable": "Variable",
+        "station_or_sensor": "Station/Sensor",
+        "depth_or_position": "Depth/Position",
+        "rmse": "RMSE",
+        "mbe": "MBE",
+        "r": r"$r$",
+        "kge": "KGE",
+        "nse": "NSE",
+        "n_valid": r"$n$",
+    }
+    fmt_df.columns = [col_headers.get(c, c) for c in fmt_df.columns]
+
+    # Build LaTeX table
+    n_cols = len(fmt_df.columns)
+    col_fmt = "l" * 3 + "r" * (n_cols - 3)
+
+    lines = []
+    lines.append(r"\begin{table}[htbp]")
+    lines.append(r"\centering")
+    lines.append(r"\caption{Comprehensive validation statistics: "
+                 r"PALM vs.\ Britz observations.}")
+    lines.append(r"\label{tab:britz_statistics}")
+    lines.append(r"\small")
+    lines.append(r"\begin{tabular}{" + col_fmt + "}")
+    lines.append(r"\toprule")
+    lines.append(" & ".join(fmt_df.columns) + r" \\")
+    lines.append(r"\midrule")
+    for _, row in fmt_df.iterrows():
+        # Escape underscores in text columns
+        vals = []
+        for v in row.values:
+            s = str(v).replace("_", r"\_")
+            vals.append(s)
+        lines.append(" & ".join(vals) + r" \\")
+    lines.append(r"\bottomrule")
+    lines.append(r"\end{tabular}")
+    lines.append(r"\end{table}")
+
+    with open(outpath, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"  Exported LaTeX: {outpath}")
+
+
+# =============================================================================
 # Main orchestration
 # =============================================================================
 
@@ -1748,6 +2154,9 @@ def main():
     print(f"Output directory: {plot_dir}")
     print(f"Time window: {cfg['time']['sim_start']} to {cfg['time']['sim_end']}")
     print()
+
+    # Unified comparison list for Phase 3 (Taylor diagram, heatmap, stats table)
+    all_comparisons = []
 
     # ---- Phase 1: Soil comparison ----
     soil_toggles = [
@@ -1843,6 +2252,58 @@ def main():
     if any(soil_toggles):
         export_soil_statistics_csv(all_soil_stats, plot_dir)
 
+    # Collect Phase 1 comparisons in unified format for Phase 3
+    if any(soil_toggles) and all_soil_stats:
+        for s in all_soil_stats:
+            # Recompute obs_std and sim_std for Taylor diagram
+            comp = {
+                "variable": "soil_moisture",
+                "station_or_sensor": SPECIES_LABELS.get(s["station"],
+                                                         s["station"]),
+                "depth_or_position": f"{s['depth_cm']} cm",
+                "rmse": s["rmse"],
+                "mbe": s["mbe"],
+                "r": s["r"],
+                "kge": s["kge"],
+                "nse": s["nse"],
+                "n_valid": s["n_valid"],
+                "r_beta": s.get("r_beta", np.nan),
+                "r_gamma": s.get("r_gamma", np.nan),
+                "obs_std": np.nan,
+                "sim_std": np.nan,
+            }
+            all_comparisons.append(comp)
+
+    # We need obs_std/sim_std for Taylor diagram — recompute from aligned data
+    if any(soil_toggles) and all_soil_stats:
+        for comp_dict, raw_s in zip(
+            [c for c in all_comparisons if c["variable"] == "soil_moisture"],
+            all_soil_stats,
+        ):
+            sid = raw_s["station"]
+            depth_cm = raw_s["depth_cm"]
+            layer_idx = raw_s["palm_layer_index"]
+            obs_df_s = obs_data.get(sid)
+            palm_st = palm_soil.get(sid)
+            if obs_df_s is None or palm_st is None:
+                continue
+            if depth_cm in obs_df_s.columns:
+                obs_ts = obs_df_s[depth_cm].dropna()
+            else:
+                continue
+            palm_m = palm_st["m_soil"][:, layer_idx]
+            palm_series = pd.Series(
+                np.ma.filled(palm_m, np.nan), index=palm_idx
+            )
+            common = obs_ts.index.intersection(palm_series.index).sort_values()
+            if len(common) >= 3:
+                oa = obs_ts.reindex(common).values
+                sa = palm_series.reindex(common).values
+                valid_mask = ~(np.isnan(oa) | np.isnan(sa))
+                if valid_mask.sum() >= 3:
+                    comp_dict["obs_std"] = float(np.std(oa[valid_mask]))
+                    comp_dict["sim_std"] = float(np.std(sa[valid_mask]))
+
     # ---- Phase 2: Leaf/Air temperature ----
     leaf_toggles = [
         toggles.get("leaf_air_temp_timeseries", False),
@@ -1921,12 +2382,101 @@ def main():
     if any(leaf_toggles):
         export_leaf_temp_statistics_csv(all_leaf_stats, plot_dir)
 
+    # Collect Phase 2 comparisons into unified format for Phase 3
+    if any(leaf_toggles) and all_leaf_stats:
+        for s in all_leaf_stats:
+            tree_name = s.get("tree_id", "")
+            sid = s.get("sensor_id", "")
+            pos = s.get("position_code", "")
+            comp = {
+                "variable": "leaf_temp",
+                "station_or_sensor": f"{tree_name}/S{sid}",
+                "depth_or_position": pos,
+                "rmse": s["rmse"],
+                "mbe": s["mbe"],
+                "r": s["r"],
+                "kge": s["kge"],
+                "nse": s["nse"],
+                "n_valid": s["n_valid"],
+                "r_beta": np.nan,
+                "r_gamma": np.nan,
+                "obs_std": np.nan,
+                "sim_std": np.nan,
+            }
+            all_comparisons.append(comp)
+
+        # Compute obs_std/sim_std for leaf temp comparisons
+        for comp_dict in [c for c in all_comparisons
+                          if c["variable"] == "leaf_temp"]:
+            parts = comp_dict["station_or_sensor"].split("/S")
+            if len(parts) != 2:
+                continue
+            tree_name_c = parts[0]
+            sid_str = parts[1]
+            palm_ta = palm_ta_dict.get(tree_name_c)
+            if palm_ta is None:
+                continue
+
+            if sid_str == "avg":
+                # Tree-averaged: average all sensors
+                tcfg_c = tree_configs.get(tree_name_c)
+                if tcfg_c is None:
+                    continue
+                leaf_list = []
+                for s_id in tcfg_c["sensors"]:
+                    row = sensor_meta[sensor_meta["sensor_id"] == s_id]
+                    if row.empty:
+                        continue
+                    lc = row.iloc[0]["leaf_col"]
+                    if lc in obs_df.columns:
+                        leaf_list.append(obs_df[lc])
+                if not leaf_list:
+                    continue
+                obs_leaf = pd.concat(leaf_list, axis=1).mean(axis=1)
+            else:
+                try:
+                    s_id = int(sid_str)
+                except ValueError:
+                    continue
+                row = sensor_meta[sensor_meta["sensor_id"] == s_id]
+                if row.empty:
+                    continue
+                lc = row.iloc[0]["leaf_col"]
+                if lc not in obs_df.columns:
+                    continue
+                obs_leaf = obs_df[lc].dropna()
+
+            aligned = _resample_obs_to_palm(obs_leaf, palm_ta.index)
+            valid_mask = ~(aligned.isna() | palm_ta.isna())
+            if valid_mask.sum() >= 3:
+                oa = aligned[valid_mask].values
+                sa = palm_ta[valid_mask].values
+                comp_dict["obs_std"] = float(np.std(oa))
+                comp_dict["sim_std"] = float(np.std(sa))
+
     # ---- Phase 3: Statistics ----
+    phase3_toggles = [
+        toggles.get("statistics_summary_table", False),
+        toggles.get("taylor_diagram", False),
+    ]
+
+    if any(phase3_toggles) and all_comparisons:
+        print("\nPhase 3: Statistical Summary & Advanced Metrics ...")
+
     if toggles.get("statistics_summary_table", False):
-        print("  [SKIP] statistics_summary_table — not yet implemented")
+        print("  Building comprehensive statistics table ...")
+        stats_df = build_statistics_table(all_comparisons)
+        if not stats_df.empty:
+            csv_path = Path(plot_dir) / "britz_comparison_statistics.csv"
+            stats_df.to_csv(csv_path, index=False)
+            print(f"  Exported CSV: {csv_path}")
+            export_statistics_latex(stats_df, plot_dir)
+            print("  Plotting statistics heatmap ...")
+            plot_statistics_heatmap(stats_df, plot_cfg, plot_dir)
 
     if toggles.get("taylor_diagram", False):
-        print("  [SKIP] taylor_diagram — not yet implemented")
+        print("  Plotting Taylor diagram ...")
+        plot_taylor_diagram(all_comparisons, plot_cfg, plot_dir)
 
     # ---- Phase 4: Sap flow / dendrometer ----
     if toggles.get("sap_flow_timeseries", False):
