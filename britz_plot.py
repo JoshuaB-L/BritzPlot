@@ -463,6 +463,258 @@ def match_obs_to_palm_depths(obs_depths_cm, dz_soil):
 
 
 # =============================================================================
+# Leaf temperature observation loading and tree_id masking
+# =============================================================================
+
+def load_toa5_data(dat_path, sensor_metadata_csv, sensors="all_sensors",
+                   exclude_sensors=None, exclude_after=None,
+                   time_start=None, time_end=None):
+    """Parse Campbell Scientific TOA5 .dat file and extract leaf/air columns.
+
+    Parameters
+    ----------
+    dat_path : str or Path
+        Path to the TOA5 .dat file (4-row header).
+    sensor_metadata_csv : str or Path
+        Path to oak_sensor_metadata.csv with leaf_col/air_col mappings.
+    sensors : str or list
+        ``"all_sensors"`` for all, or list of sensor_id ints.
+    exclude_sensors : list of int or None
+        Sensor IDs to exclude entirely.
+    exclude_after : str or None
+        ISO datetime; exclude data after this time for excluded sensors.
+        (Not used for fully excluded sensors — they are dropped entirely.)
+    time_start, time_end : str or None
+        ISO datetimes to filter the output time window.
+
+    Returns
+    -------
+    df : pandas.DataFrame
+        DatetimeIndex, columns like Leaf1, Air1, Leaf2, Air2, ...
+    metadata : pandas.DataFrame
+        Sensor metadata table.
+    """
+    dat_path = Path(dat_path)
+    if not dat_path.exists():
+        sys.exit(f"ERROR: TOA5 file not found: {dat_path}")
+
+    # Read column names from row 1 (second header row)
+    col_names = pd.read_csv(dat_path, skiprows=1, nrows=0).columns.tolist()
+    print(f"  TOA5 columns: {len(col_names)} columns")
+
+    # Read data starting from row 4 (skip 4 header rows)
+    df = pd.read_csv(
+        dat_path, skiprows=4, header=None, names=col_names,
+        na_values=["NAN", '"NAN"'], parse_dates=["TIMESTAMP"],
+        index_col="TIMESTAMP", low_memory=False,
+    )
+    print(f"  TOA5 raw: {df.shape[0]} rows, {df.shape[1]} columns")
+
+    # Load sensor metadata
+    meta = pd.read_csv(sensor_metadata_csv)
+
+    # Determine which sensors to include
+    if exclude_sensors is None:
+        exclude_sensors = []
+    if sensors == "all_sensors":
+        sensor_ids = [s for s in meta["sensor_id"].tolist()
+                      if s not in exclude_sensors]
+    else:
+        sensor_ids = [s for s in sensors if s not in exclude_sensors]
+
+    # Extract Leaf and Air columns for selected sensors
+    keep_cols = []
+    for sid in sensor_ids:
+        row = meta[meta["sensor_id"] == sid]
+        if row.empty:
+            continue
+        leaf_col = row.iloc[0]["leaf_col"]
+        air_col = row.iloc[0]["air_col"]
+        if leaf_col in df.columns:
+            keep_cols.append(leaf_col)
+        if air_col in df.columns:
+            keep_cols.append(air_col)
+
+    df = df[keep_cols]
+
+    # Filter to simulation time window
+    if time_start is not None:
+        df = df[df.index >= pd.to_datetime(time_start)]
+    if time_end is not None:
+        df = df[df.index <= pd.to_datetime(time_end)]
+
+    print(f"  TOA5 filtered: {df.shape[0]} rows, sensors: "
+          f"{sorted(sensor_ids)}, excluded: {sorted(exclude_sensors)}")
+
+    return df, meta
+
+
+def build_tree_id_mask(static_path, palm_tree_id):
+    """Build 3D boolean mask for a specific tree_id from the static driver.
+
+    Parameters
+    ----------
+    static_path : str or Path
+        Path to the PALM static driver NetCDF file.
+    palm_tree_id : int
+        The tree_id value to match.
+
+    Returns
+    -------
+    mask : numpy.ndarray
+        Boolean array of shape (zlad, y, x).
+    voxels : list of tuple
+        List of (z, y, x) coordinates where mask is True.
+    """
+    ds = nc.Dataset(str(static_path), "r")
+    tree_id = ds.variables["tree_id"][:]
+    ds.close()
+
+    mask = np.asarray(tree_id == palm_tree_id)
+    n_voxels = int(np.sum(mask))
+
+    if n_voxels == 0:
+        unique_ids = np.unique(tree_id[tree_id > 0])
+        raise ValueError(
+            f"tree_id {palm_tree_id} not found in static driver. "
+            f"Available IDs: {unique_ids[:20].tolist()} "
+            f"(total: {len(unique_ids)})"
+        )
+
+    zz, yy, xx = np.where(mask)
+    voxels = list(zip(zz.tolist(), yy.tolist(), xx.tolist()))
+
+    print(f"  tree_id {palm_tree_id}: {n_voxels} voxels, "
+          f"z=[{zz.min()}-{zz.max()}], "
+          f"y=[{yy.min()}-{yy.max()}], "
+          f"x=[{xx.min()}-{xx.max()}]")
+
+    return mask, voxels
+
+
+def extract_palm_ta_at_tree(palm_3d_data, tree_mask, reference_time):
+    """Extract PALM air temperature at tree crown from 3D output.
+
+    PALM's time-averaged 3D output masks ``ta`` inside the plant canopy.
+    For each (y, x) column in the tree footprint, this function finds
+    the first valid z-level above the canopy top and extracts ``ta``
+    there.  The per-column values are averaged spatially per timestep.
+
+    Parameters
+    ----------
+    palm_3d_data : dict
+        Merged PALM 3D data from :func:`load_palm_restart_series`.
+        Must contain ``"ta"`` and ``"time"``.
+    tree_mask : numpy.ndarray
+        Boolean mask of shape (n_zlad, y, x) from :func:`build_tree_id_mask`.
+    reference_time : str
+        Reference datetime for converting PALM seconds to timestamps.
+
+    Returns
+    -------
+    ta_series : pandas.Series
+        Spatially averaged air temperature at tree crown, DatetimeIndex.
+        Units are as-is from PALM (Celsius if units="degree_").
+    """
+    ta = palm_3d_data["ta"]  # shape: (n_times, n_zu, y, x)
+    time_s = palm_3d_data["time"]
+    n_zu = ta.shape[1]
+
+    # Determine (y, x) footprint and max z per column from tree mask
+    zz, yy, xx = np.where(tree_mask)
+    yx_pairs = {}
+    for z, y, x in zip(zz, yy, xx):
+        key = (int(y), int(x))
+        if key not in yx_pairs or z > yx_pairs[key]:
+            yx_pairs[key] = int(z)
+
+    # For each (y,x) column, find the first valid z in ta (first timestep)
+    ta_first = ta[0]  # (n_zu, y, x)
+    extract_indices = []  # (z, y, x) tuples with valid ta
+    for (y, x), max_z in yx_pairs.items():
+        for z in range(max_z, n_zu):
+            val = ta_first[z, y, x]
+            if not (np.ma.is_masked(val) if hasattr(val, "mask")
+                    else (np.isnan(val) or val < -9e5)):
+                extract_indices.append((z, y, x))
+                break
+
+    n_columns = len(yx_pairs)
+    n_valid = len(extract_indices)
+    if n_valid == 0:
+        print(f"  WARNING: no valid ta values found above tree crown")
+        ref = pd.to_datetime(reference_time)
+        palm_rounded = np.round(np.asarray(time_s) / 900.0) * 900.0
+        palm_dt = ref + pd.to_timedelta(palm_rounded, unit="s")
+        return pd.Series(np.nan, index=pd.DatetimeIndex(palm_dt),
+                         name="ta_tree")
+
+    # Extract ta at those locations for all timesteps
+    ta_values = []
+    for t in range(ta.shape[0]):
+        vals = []
+        for z, y, x in extract_indices:
+            val = ta[t, z, y, x]
+            if hasattr(val, "mask") and np.ma.is_masked(val):
+                continue
+            fval = float(val)
+            if fval > -9e5:
+                vals.append(fval)
+        ta_values.append(np.mean(vals) if vals else np.nan)
+
+    # Build datetime index
+    ref = pd.to_datetime(reference_time)
+    palm_rounded = np.round(np.asarray(time_s) / 900.0) * 900.0
+    palm_dt = ref + pd.to_timedelta(palm_rounded, unit="s")
+
+    ta_series = pd.Series(ta_values, index=pd.DatetimeIndex(palm_dt),
+                          name="ta_tree")
+
+    z_levels = [z for z, _, _ in extract_indices]
+    print(f"  PALM ta: {len(ta_values)} timesteps from {n_valid}/{n_columns} "
+          f"columns, z-levels {min(z_levels)}-{max(z_levels)}, "
+          f"range [{np.nanmin(ta_values):.2f}, {np.nanmax(ta_values):.2f}] "
+          f"(Celsius — units='degree_', no conversion needed)")
+
+    return ta_series
+
+
+def split_tree_mask_north_south(tree_mask):
+    """Split tree_id mask into North and South halves by median y-index.
+
+    Parameters
+    ----------
+    tree_mask : numpy.ndarray
+        Boolean mask of shape (zlad, y, x).
+
+    Returns
+    -------
+    north_mask : numpy.ndarray
+        Boolean mask for voxels in the north half (higher y-index).
+    south_mask : numpy.ndarray
+        Boolean mask for voxels in the south half (lower y-index).
+    """
+    zz, yy, xx = np.where(tree_mask)
+    median_y = np.median(yy)
+
+    north_mask = np.zeros_like(tree_mask, dtype=bool)
+    south_mask = np.zeros_like(tree_mask, dtype=bool)
+
+    for z, y, x in zip(zz, yy, xx):
+        if y >= median_y:
+            north_mask[z, y, x] = True
+        else:
+            south_mask[z, y, x] = True
+
+    n_north = int(np.sum(north_mask))
+    n_south = int(np.sum(south_mask))
+    print(f"  North/South split: median_y={median_y:.1f}, "
+          f"north={n_north} voxels, south={n_south} voxels")
+
+    return north_mask, south_mask
+
+
+# =============================================================================
 # Statistical metrics
 # =============================================================================
 
@@ -950,6 +1202,517 @@ def export_soil_statistics_csv(all_stats, outdir):
 
 
 # =============================================================================
+# Leaf/air temperature comparison plots
+# =============================================================================
+
+def _resample_obs_to_palm(obs_series, palm_dt_index):
+    """Resample observation series to PALM 15-min timestamps via nearest.
+
+    Parameters
+    ----------
+    obs_series : pandas.Series
+        Observation timeseries with DatetimeIndex (10-min frequency).
+    palm_dt_index : pandas.DatetimeIndex
+        PALM timestamps (15-min frequency).
+
+    Returns
+    -------
+    aligned : pandas.Series
+        Obs values reindexed to PALM timestamps using nearest-neighbour
+        within a 10-minute tolerance.
+    """
+    return obs_series.reindex(palm_dt_index, method="nearest",
+                              tolerance=pd.Timedelta("10min"))
+
+
+def plot_leaf_air_temp_timeseries(obs_df, palm_ta_dict, tree_configs,
+                                  sensor_meta, plot_cfg, outdir):
+    """Plot leaf/air temperature timeseries: obs leaf, obs air, PALM ta.
+
+    One figure per tree with one subplot per sensor.  Each subplot shows
+    three lines: observed leaf temperature, observed air temperature, and
+    PALM air temperature at the tree crown.
+
+    Parameters
+    ----------
+    obs_df : pandas.DataFrame
+        TOA5 data with DatetimeIndex, columns Leaf1, Air1, Leaf2, Air2, ...
+    palm_ta_dict : dict
+        ``{tree_name: pandas.Series}`` PALM ta at tree crown.
+    tree_configs : dict
+        Tree configuration from config (``leaf_temp.tree_ids`` section).
+    sensor_meta : pandas.DataFrame
+        Sensor metadata with sensor_id, leaf_col, air_col, position_code.
+    plot_cfg : dict
+        Plot settings.
+    outdir : str
+        Output directory.
+
+    Returns
+    -------
+    all_stats : list of dict
+        Per-sensor statistics for CSV export.
+    """
+    fig_w = mm_to_inches(plot_cfg["figure_width_mm"])
+    lw = plot_cfg.get("line_width", 1.5)
+    all_stats = []
+
+    for tree_name, tcfg in tree_configs.items():
+        palm_ta = palm_ta_dict.get(tree_name)
+        if palm_ta is None:
+            continue
+
+        sensor_ids = tcfg["sensors"]
+        valid_sensors = []
+        for sid in sensor_ids:
+            row = sensor_meta[sensor_meta["sensor_id"] == sid]
+            if row.empty:
+                continue
+            leaf_col = row.iloc[0]["leaf_col"]
+            if leaf_col in obs_df.columns:
+                valid_sensors.append(sid)
+
+        if not valid_sensors:
+            continue
+
+        n_sensors = len(valid_sensors)
+        fig_h = fig_w * 0.35 * max(n_sensors, 2)
+        fig, axes = plt.subplots(n_sensors, 1, figsize=(fig_w, fig_h),
+                                  sharex=True, squeeze=False)
+
+        for i, sid in enumerate(valid_sensors):
+            ax = axes[i, 0]
+            row = sensor_meta[sensor_meta["sensor_id"] == sid].iloc[0]
+            leaf_col = row["leaf_col"]
+            air_col = row["air_col"]
+            pos_code = row["position_code"]
+
+            obs_leaf = (obs_df[leaf_col].dropna()
+                        if leaf_col in obs_df.columns
+                        else pd.Series(dtype=float))
+            obs_air = (obs_df[air_col].dropna()
+                       if air_col in obs_df.columns
+                       else pd.Series(dtype=float))
+
+            ax.plot(obs_leaf.index, obs_leaf.values, color=TOL_GREEN, lw=lw,
+                    label="Obs leaf", zorder=3)
+            ax.plot(obs_air.index, obs_air.values, color=TOL_BLUE,
+                    lw=lw * 0.8, label="Obs air", zorder=2, alpha=0.7)
+            ax.plot(palm_ta.index, palm_ta.values, color=TOL_RED, lw=lw,
+                    ls="--", label="PALM ta", zorder=4)
+
+            # Compute stats: obs leaf vs PALM ta
+            aligned_obs = _resample_obs_to_palm(obs_leaf, palm_ta.index)
+            mask = ~(aligned_obs.isna() | palm_ta.isna())
+            if mask.sum() >= 3:
+                stats = compute_statistics(aligned_obs[mask].values,
+                                           palm_ta[mask].values)
+            else:
+                stats = {"rmse": np.nan, "mbe": np.nan, "r": np.nan,
+                         "kge": np.nan, "nse": np.nan, "n_valid": 0}
+
+            all_stats.append({
+                "tree_id": tree_name,
+                "sensor_id": sid,
+                "position_code": pos_code,
+                "rmse": stats["rmse"],
+                "mbe": stats["mbe"],
+                "r": stats["r"],
+                "kge": stats["kge"],
+                "nse": stats["nse"],
+                "n_valid": stats["n_valid"],
+            })
+
+            # Stats annotation box
+            ann = (f"RMSE={stats['rmse']:.2f}  R={stats['r']:.3f}  "
+                   f"KGE={stats['kge']:.3f}  n={stats['n_valid']}")
+            ax.text(0.02, 0.95, ann, transform=ax.transAxes,
+                    fontsize=plot_cfg.get("legend_size", 7.5),
+                    va="top", ha="left",
+                    bbox=dict(facecolor="white", alpha=0.8,
+                              edgecolor="#CCCCCC",
+                              boxstyle="round,pad=0.3"))
+
+            # Delta_T diagnostic
+            if len(obs_leaf) > 0 and len(obs_air) > 0:
+                common_idx = obs_leaf.index.intersection(obs_air.index)
+                if len(common_idx) > 0:
+                    delta_t = obs_leaf.reindex(common_idx) - obs_air.reindex(common_idx)
+                    dt_min, dt_max = delta_t.min(), delta_t.max()
+                    if dt_min < -5 or dt_max > 10:
+                        print(f"    WARNING S{sid}: Delta_T [{dt_min:.1f}, "
+                              f"{dt_max:.1f}] outside expected range (-5, +10)")
+
+            ax.set_ylabel("Temperature [\u00b0C]")
+            ax.set_title(f"Sensor {sid} ({pos_code})",
+                         fontsize=plot_cfg.get("tick_size", 8), loc="left")
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%H:%M"))
+
+        axes[0, 0].legend(loc="upper right", ncol=3, frameon=True,
+                           fancybox=False, edgecolor="#CCCCCC",
+                           framealpha=0.9)
+        axes[-1, 0].set_xlabel("Time (UTC)")
+
+        tree_label = (f"Oak {tcfg['britz_id']} "
+                      f"(PALM tree_id {tcfg['palm_tree_id']})")
+        fig.suptitle(f"Leaf/Air Temperature: Obs vs PALM \u2014 {tree_label}",
+                      fontsize=plot_cfg.get("title_size", 10))
+        fig.tight_layout()
+        _save_figure(fig, outdir, f"leaf_air_temp_ts_{tree_name}", plot_cfg)
+
+    return all_stats
+
+
+def plot_leaf_temp_scatter(obs_df, palm_ta_dict, tree_configs,
+                            sensor_meta, plot_cfg, outdir):
+    """Scatter plot: observed leaf temperature vs PALM ta.
+
+    All sensors combined on one plot, colored by sensor ID.  Includes
+    1:1 reference line and linear regression with R^2 annotation.
+
+    Parameters
+    ----------
+    obs_df : pandas.DataFrame
+        TOA5 data with Leaf columns.
+    palm_ta_dict : dict
+        ``{tree_name: pandas.Series}`` PALM ta.
+    tree_configs : dict
+        Tree configuration.
+    sensor_meta : pandas.DataFrame
+        Sensor metadata.
+    plot_cfg : dict
+        Plot settings.
+    outdir : str
+        Output directory.
+    """
+    fig_w = mm_to_inches(plot_cfg["figure_width_mm"])
+    fig_h = fig_w * 0.85
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    colors = [TOL_BLUE, TOL_CYAN, TOL_GREEN, TOL_YELLOW,
+              TOL_RED, TOL_PURPLE, TOL_GREY, "#332288"]
+
+    all_obs = []
+    all_sim = []
+    color_idx = 0
+
+    for tree_name, tcfg in tree_configs.items():
+        palm_ta = palm_ta_dict.get(tree_name)
+        if palm_ta is None:
+            continue
+
+        for sid in tcfg["sensors"]:
+            row = sensor_meta[sensor_meta["sensor_id"] == sid]
+            if row.empty:
+                continue
+            leaf_col = row.iloc[0]["leaf_col"]
+            if leaf_col not in obs_df.columns:
+                continue
+            pos_code = row.iloc[0]["position_code"]
+
+            obs_leaf = obs_df[leaf_col].dropna()
+            aligned = _resample_obs_to_palm(obs_leaf, palm_ta.index)
+            mask = ~(aligned.isna() | palm_ta.isna())
+
+            if mask.sum() < 2:
+                color_idx += 1
+                continue
+
+            obs_vals = aligned[mask].values
+            sim_vals = palm_ta[mask].values
+
+            c = colors[color_idx % len(colors)]
+            ax.scatter(sim_vals, obs_vals, s=12, alpha=0.6, color=c,
+                       edgecolors="none",
+                       label=f"S{sid} ({pos_code})", zorder=3)
+
+            all_obs.extend(obs_vals.tolist())
+            all_sim.extend(sim_vals.tolist())
+            color_idx += 1
+
+    if all_obs:
+        all_obs_arr = np.array(all_obs)
+        all_sim_arr = np.array(all_sim)
+
+        vmin = min(all_obs_arr.min(), all_sim_arr.min()) - 1
+        vmax = max(all_obs_arr.max(), all_sim_arr.max()) + 1
+        ax.plot([vmin, vmax], [vmin, vmax], "k--", lw=0.8, alpha=0.6,
+                label="1:1 line", zorder=1)
+
+        valid = ~(np.isnan(all_obs_arr) | np.isnan(all_sim_arr))
+        if valid.sum() >= 3:
+            slope, intercept = np.polyfit(all_sim_arr[valid],
+                                          all_obs_arr[valid], 1)
+            r_val = np.corrcoef(all_sim_arr[valid],
+                                all_obs_arr[valid])[0, 1]
+            x_fit = np.linspace(vmin, vmax, 100)
+            ax.plot(x_fit, slope * x_fit + intercept, color=TOL_RED,
+                    lw=1.2, ls="-", alpha=0.8, zorder=2,
+                    label=f"Regression (R\u00b2={r_val**2:.3f})")
+
+        ax.set_xlim(vmin, vmax)
+        ax.set_ylim(vmin, vmax)
+        ax.set_aspect("equal", adjustable="box")
+
+    ax.set_xlabel("PALM ta [\u00b0C]")
+    ax.set_ylabel("Obs leaf temperature [\u00b0C]")
+    ax.set_title("Leaf Temperature: Obs vs PALM",
+                  fontsize=plot_cfg.get("title_size", 10))
+    ax.legend(fontsize=plot_cfg.get("legend_size", 7.5), loc="upper left",
+               frameon=True, fancybox=False, edgecolor="#CCCCCC",
+               framealpha=0.9)
+    fig.tight_layout()
+    _save_figure(fig, outdir, "leaf_temp_scatter", plot_cfg)
+
+
+def plot_leaf_air_diurnal(obs_df, palm_ta_dict, tree_configs,
+                           sensor_meta, plot_cfg, outdir):
+    """Composite diurnal cycle: obs leaf, obs air, PALM ta.
+
+    Hourly mean +/- 1 std dev bands, averaged across all sensors per tree.
+    One figure per tree.
+
+    Parameters
+    ----------
+    obs_df : pandas.DataFrame
+        TOA5 data.
+    palm_ta_dict : dict
+        ``{tree_name: pandas.Series}`` PALM ta.
+    tree_configs : dict
+        Tree configuration.
+    sensor_meta : pandas.DataFrame
+        Sensor metadata.
+    plot_cfg : dict
+        Plot settings.
+    outdir : str
+        Output directory.
+    """
+    fig_w = mm_to_inches(plot_cfg["figure_width_mm"])
+    lw = plot_cfg.get("line_width", 1.5)
+    fill_alpha = plot_cfg.get("fill_alpha", 0.15)
+
+    for tree_name, tcfg in tree_configs.items():
+        palm_ta = palm_ta_dict.get(tree_name)
+        if palm_ta is None:
+            continue
+
+        leaf_series_list = []
+        air_series_list = []
+        for sid in tcfg["sensors"]:
+            row = sensor_meta[sensor_meta["sensor_id"] == sid]
+            if row.empty:
+                continue
+            leaf_col = row.iloc[0]["leaf_col"]
+            air_col = row.iloc[0]["air_col"]
+            if leaf_col in obs_df.columns:
+                leaf_series_list.append(obs_df[leaf_col])
+            if air_col in obs_df.columns:
+                air_series_list.append(obs_df[air_col])
+
+        if not leaf_series_list:
+            continue
+
+        leaf_avg = pd.concat(leaf_series_list, axis=1).mean(axis=1)
+        air_avg = (pd.concat(air_series_list, axis=1).mean(axis=1)
+                   if air_series_list else None)
+
+        leaf_hourly = leaf_avg.groupby(leaf_avg.index.hour)
+        air_hourly = (air_avg.groupby(air_avg.index.hour)
+                      if air_avg is not None else None)
+        palm_hourly = palm_ta.groupby(palm_ta.index.hour)
+
+        hours = np.arange(24)
+
+        fig_h = fig_w * 0.55
+        fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+        leaf_mean = leaf_hourly.mean().reindex(hours)
+        leaf_std = leaf_hourly.std().reindex(hours)
+        ax.plot(hours, leaf_mean.values, color=TOL_GREEN, lw=lw,
+                label="Obs leaf", zorder=3)
+        ax.fill_between(hours,
+                         (leaf_mean - leaf_std).values,
+                         (leaf_mean + leaf_std).values,
+                         color=TOL_GREEN, alpha=fill_alpha, zorder=1)
+
+        if air_hourly is not None:
+            air_mean = air_hourly.mean().reindex(hours)
+            air_std = air_hourly.std().reindex(hours)
+            ax.plot(hours, air_mean.values, color=TOL_BLUE, lw=lw * 0.8,
+                    label="Obs air", zorder=2, alpha=0.8)
+            ax.fill_between(hours,
+                             (air_mean - air_std).values,
+                             (air_mean + air_std).values,
+                             color=TOL_BLUE, alpha=fill_alpha, zorder=1)
+
+        palm_mean = palm_hourly.mean().reindex(hours)
+        palm_std = palm_hourly.std().reindex(hours)
+        ax.plot(hours, palm_mean.values, color=TOL_RED, lw=lw,
+                ls="--", label="PALM ta", zorder=4)
+        ax.fill_between(hours,
+                         (palm_mean - palm_std).values,
+                         (palm_mean + palm_std).values,
+                         color=TOL_RED, alpha=fill_alpha, zorder=1)
+
+        ax.set_xlim(0, 23)
+        ax.set_xticks(np.arange(0, 24, 3))
+        ax.set_xlabel("Hour of day (UTC)")
+        ax.set_ylabel("Temperature [\u00b0C]")
+
+        tree_label = (f"Oak {tcfg['britz_id']} "
+                      f"(PALM tree_id {tcfg['palm_tree_id']})")
+        ax.set_title(f"Diurnal Cycle: Obs vs PALM \u2014 {tree_label}",
+                      fontsize=plot_cfg.get("title_size", 10))
+        ax.legend(loc="upper right", ncol=3, frameon=True,
+                   fancybox=False, edgecolor="#CCCCCC", framealpha=0.9)
+        fig.tight_layout()
+        _save_figure(fig, outdir, f"leaf_air_diurnal_{tree_name}", plot_cfg)
+
+
+def plot_tree_averaged_comparison(obs_df, palm_ta_dict, tree_configs,
+                                   sensor_meta, plot_cfg, outdir):
+    """Tree-averaged obs leaf temp vs PALM ta.
+
+    Averages all selected sensors per tree and compares with the spatially
+    averaged PALM ta.  One subplot per tree with error bands (+/- 1 std
+    across sensors).
+
+    Parameters
+    ----------
+    obs_df : pandas.DataFrame
+        TOA5 data.
+    palm_ta_dict : dict
+        ``{tree_name: pandas.Series}`` PALM ta.
+    tree_configs : dict
+        Tree configuration.
+    sensor_meta : pandas.DataFrame
+        Sensor metadata.
+    plot_cfg : dict
+        Plot settings.
+    outdir : str
+        Output directory.
+
+    Returns
+    -------
+    tree_stats : list of dict
+        Per-tree averaged statistics.
+    """
+    fig_w = mm_to_inches(plot_cfg["figure_width_mm"])
+    lw = plot_cfg.get("line_width", 1.5)
+    fill_alpha = plot_cfg.get("fill_alpha", 0.15)
+    n_trees = len(tree_configs)
+    tree_stats = []
+
+    fig_h = fig_w * 0.4 * max(n_trees, 1)
+    fig, axes = plt.subplots(n_trees, 1, figsize=(fig_w, fig_h),
+                              sharex=True, squeeze=False)
+
+    for idx, (tree_name, tcfg) in enumerate(tree_configs.items()):
+        ax = axes[idx, 0]
+        palm_ta = palm_ta_dict.get(tree_name)
+        if palm_ta is None:
+            continue
+
+        leaf_series_list = []
+        for sid in tcfg["sensors"]:
+            row = sensor_meta[sensor_meta["sensor_id"] == sid]
+            if row.empty:
+                continue
+            leaf_col = row.iloc[0]["leaf_col"]
+            if leaf_col in obs_df.columns:
+                leaf_series_list.append(obs_df[leaf_col])
+
+        if not leaf_series_list:
+            continue
+
+        leaf_df = pd.concat(leaf_series_list, axis=1)
+        leaf_mean = leaf_df.mean(axis=1)
+        leaf_std = leaf_df.std(axis=1)
+
+        leaf_mean_aligned = _resample_obs_to_palm(leaf_mean, palm_ta.index)
+
+        ax.plot(leaf_mean.index, leaf_mean.values, color=TOL_GREEN, lw=lw,
+                label="Obs leaf (mean)", zorder=3)
+        ax.fill_between(leaf_mean.index,
+                         (leaf_mean - leaf_std).values,
+                         (leaf_mean + leaf_std).values,
+                         color=TOL_GREEN, alpha=fill_alpha, zorder=1)
+        ax.plot(palm_ta.index, palm_ta.values, color=TOL_RED, lw=lw,
+                ls="--", label="PALM ta", zorder=4)
+
+        mask = ~(leaf_mean_aligned.isna() | palm_ta.isna())
+        if mask.sum() >= 3:
+            stats = compute_statistics(leaf_mean_aligned[mask].values,
+                                       palm_ta[mask].values)
+        else:
+            stats = {"rmse": np.nan, "mbe": np.nan, "r": np.nan,
+                     "kge": np.nan, "nse": np.nan, "n_valid": 0}
+
+        tree_stats.append({
+            "tree_id": tree_name,
+            "sensor_id": "avg",
+            "position_code": "tree_avg",
+            "rmse": stats["rmse"],
+            "mbe": stats["mbe"],
+            "r": stats["r"],
+            "kge": stats["kge"],
+            "nse": stats["nse"],
+            "n_valid": stats["n_valid"],
+        })
+
+        ann = (f"RMSE={stats['rmse']:.2f}  R={stats['r']:.3f}  "
+               f"KGE={stats['kge']:.3f}  n={stats['n_valid']}")
+        ax.text(0.02, 0.95, ann, transform=ax.transAxes,
+                fontsize=plot_cfg.get("legend_size", 7.5),
+                va="top", ha="left",
+                bbox=dict(facecolor="white", alpha=0.8,
+                          edgecolor="#CCCCCC",
+                          boxstyle="round,pad=0.3"))
+
+        tree_label = (f"Oak {tcfg['britz_id']} "
+                      f"(PALM tree_id {tcfg['palm_tree_id']})")
+        ax.set_ylabel("Temperature [\u00b0C]")
+        ax.set_title(tree_label, fontsize=plot_cfg.get("tick_size", 8),
+                     loc="left")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%H:%M"))
+
+    axes[0, 0].legend(loc="upper right", ncol=2, frameon=True,
+                       fancybox=False, edgecolor="#CCCCCC", framealpha=0.9)
+    axes[-1, 0].set_xlabel("Time (UTC)")
+    fig.suptitle("Tree-Averaged Leaf Temperature: Obs vs PALM",
+                  fontsize=plot_cfg.get("title_size", 10))
+    fig.tight_layout()
+    _save_figure(fig, outdir, "tree_averaged_comparison", plot_cfg)
+
+    return tree_stats
+
+
+def export_leaf_temp_statistics_csv(all_stats, outdir):
+    """Export leaf temperature comparison statistics to CSV.
+
+    Parameters
+    ----------
+    all_stats : list of dict
+        Per-sensor and per-tree statistics.
+    outdir : str
+        Output directory.
+    """
+    if not all_stats:
+        print("  No leaf temperature statistics to export.")
+        return
+
+    outpath = Path(outdir) / "leaf_temp_comparison_statistics.csv"
+    fieldnames = ["tree_id", "sensor_id", "position_code",
+                  "rmse", "mbe", "r", "kge", "nse", "n_valid"]
+    with open(outpath, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in all_stats:
+            writer.writerow(row)
+    print(f"  Exported: {outpath}")
+
+
+# =============================================================================
 # Main orchestration
 # =============================================================================
 
@@ -1081,17 +1844,82 @@ def main():
         export_soil_statistics_csv(all_soil_stats, plot_dir)
 
     # ---- Phase 2: Leaf/Air temperature ----
+    leaf_toggles = [
+        toggles.get("leaf_air_temp_timeseries", False),
+        toggles.get("leaf_temp_scatter", False),
+        toggles.get("leaf_air_temp_diurnal", False),
+        toggles.get("tree_id_averaged_comparison", False),
+    ]
+
+    if any(leaf_toggles):
+        print("\nPhase 2: Loading leaf/air temperature data ...")
+        lt_cfg = cfg["leaf_temp"]
+
+        obs_df, sensor_meta = load_toa5_data(
+            paths["leaf_temp_dat"],
+            paths["sensor_metadata_csv"],
+            sensors=lt_cfg.get("sensors", "all_sensors"),
+            exclude_sensors=lt_cfg.get("exclude_sensors"),
+            exclude_after=lt_cfg.get("exclude_after"),
+            time_start=cfg["time"]["sim_start"],
+            time_end=cfg["time"]["sim_end"],
+        )
+
+        print("  Loading PALM 3D data for ta ...")
+        palm_3d_ta = load_palm_restart_series(
+            paths["palm_output_dir"], paths["palm_job_name"],
+            "av_3d", lt_cfg["palm_domain"],
+            variables=["ta"],
+        )
+
+        palm_ta_dict = {}
+        tree_configs = lt_cfg["tree_ids"]
+        static_path = paths["static_driver"]
+
+        for tree_name, tcfg in tree_configs.items():
+            print(f"  Processing {tree_name} "
+                  f"(PALM tree_id {tcfg['palm_tree_id']}) ...")
+            tree_mask, _ = build_tree_id_mask(static_path,
+                                               tcfg["palm_tree_id"])
+            palm_ta_dict[tree_name] = extract_palm_ta_at_tree(
+                palm_3d_ta, tree_mask, cfg["time"]["reference_time"]
+            )
+
+        all_leaf_stats = []
+        print()
+
     if toggles.get("leaf_air_temp_timeseries", False):
-        print("  [SKIP] leaf_air_temp_timeseries — not yet implemented")
+        print("  Plotting leaf/air temperature timeseries ...")
+        stats = plot_leaf_air_temp_timeseries(
+            obs_df, palm_ta_dict, tree_configs, sensor_meta,
+            plot_cfg, plot_dir,
+        )
+        all_leaf_stats.extend(stats)
 
     if toggles.get("leaf_temp_scatter", False):
-        print("  [SKIP] leaf_temp_scatter — not yet implemented")
+        print("  Plotting leaf temperature scatter ...")
+        plot_leaf_temp_scatter(
+            obs_df, palm_ta_dict, tree_configs, sensor_meta,
+            plot_cfg, plot_dir,
+        )
 
     if toggles.get("leaf_air_temp_diurnal", False):
-        print("  [SKIP] leaf_air_temp_diurnal — not yet implemented")
+        print("  Plotting leaf/air diurnal composite ...")
+        plot_leaf_air_diurnal(
+            obs_df, palm_ta_dict, tree_configs, sensor_meta,
+            plot_cfg, plot_dir,
+        )
 
     if toggles.get("tree_id_averaged_comparison", False):
-        print("  [SKIP] tree_id_averaged_comparison — not yet implemented")
+        print("  Plotting tree-averaged comparison ...")
+        tree_stats = plot_tree_averaged_comparison(
+            obs_df, palm_ta_dict, tree_configs, sensor_meta,
+            plot_cfg, plot_dir,
+        )
+        all_leaf_stats.extend(tree_stats)
+
+    if any(leaf_toggles):
+        export_leaf_temp_statistics_csv(all_leaf_stats, plot_dir)
 
     # ---- Phase 3: Statistics ----
     if toggles.get("statistics_summary_table", False):
