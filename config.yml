@@ -1,0 +1,110 @@
+# BritzPlot — PALM Model Validation Against Britz Field Observations
+# Configuration file driving the entire analysis pipeline
+
+# ── Paths ─────────────────────────────────────────────────────────
+paths:
+  palm_output_dir: "/mnt/archer2/palm_25_10_rc1_lake_mod/current_version/JOBS/britz_snap_60m_feddes/OUTPUT"
+  palm_job_name: "britz_snap_60m_feddes"
+  static_driver: "input/pcm_study_britz_icon_static_N02_modified.backup_20250519_175851"
+  soil_obs_csv: "../../data/britz/soil/wc_britz_all_stations_2024.csv"
+  soil_static_pars: "../../data/britz/soil/soil_static_pars.csv"
+  leaf_temp_dat: "../../data/britz/leaf_temp/E4_CR300_Station1_2024.dat"
+  sensor_metadata_csv: "input/oak_sensor_metadata.csv"
+  output_dir: "output"
+
+# ── Time window ───────────────────────────────────────────────────
+time:
+  sim_start: "2024-09-04 00:00:00"
+  sim_end: "2024-09-05 00:00:00"
+  reference_time: "2024-09-04 00:00:00"
+
+# ── PALM domain ───────────────────────────────────────────────────
+palm:
+  origin_E: 421505.0
+  origin_N: 5859265.0
+  dx: 10.0
+  dy: 10.0
+  dz_soil: [0.10, 0.10, 0.10, 0.10, 0.10, 0.50, 1.00, 1.00, 1.00, 0.60]
+
+# ── Soil comparison ──────────────────────────────────────────────
+soil:
+  stations:
+    "9801_02":
+      label: "Beech (Ly2)"
+      lat: 52.877862
+      lon: 13.835322
+    "9801_04":
+      label: "Oak (Ly4)"
+      lat: 52.878104
+      lon: 13.834892
+    "9801_08":
+      label: "Douglas fir (Ly8)"
+      lat: 52.878598
+      lon: 13.834050
+  obs_depths_cm: [10, 20, 30, 40, 50, 100, 200, 300, 400, 460]
+  layers: "all_layers"
+  palm_domain: "N02"
+  palm_file_type: "av_3d"
+
+# ── Leaf/air temperature comparison ──────────────────────────────
+leaf_temp:
+  sensors: "all_sensors"
+  exclude_sensors: [6]
+  exclude_after: "2024-08-31 09:20:00"
+  tree_ids:
+    oak_1:
+      britz_id: 49
+      palm_tree_id: 564
+      sensors: [1, 2, 3, 4]
+    oak_2:
+      britz_id: 126
+      palm_tree_id: 519
+      sensors: [5, 6, 7, 8]
+  averaged_sensor_plot: true
+  palm_domain: "N02"
+
+# ── Sap flow / dendrometer ───────────────────────────────────────
+sap_flow:
+  enabled: true
+  vhr_columns: ["VHR1_10mm", "VHR1_20mm", "VHR2_10mm", "VHR2_20mm"]
+  dendrometer_columns: ["DD_L1(1)", "DD_L1(2)", "DD_L1(3)", "DD_L1(4)", "DD_L1(5)", "DD_L1(6)"]
+  wound_correction_B: 1.7283
+  sapwood_basic_density_kg_m3: 500
+  sapwood_moisture_content: 0.8
+
+# ── Analysis toggles ─────────────────────────────────────────────
+analysis_toggles:
+  # Phase 1: Soil
+  soil_moisture_timeseries: true
+  soil_temperature_timeseries: true
+  soil_vertical_profile_mean: true
+  soil_station_comparison: true
+  # Phase 2: Leaf/Air temperature
+  leaf_air_temp_timeseries: true
+  leaf_temp_scatter: true
+  leaf_air_temp_diurnal: true
+  tree_id_averaged_comparison: true
+  # Phase 3: Statistics
+  statistics_summary_table: true
+  taylor_diagram: true
+  # Phase 4: Sap flow / dendrometer
+  sap_flow_timeseries: true
+  dendrometer_twd: true
+  mds_vs_transpiration: true
+  cross_correlation_lag: true
+
+# ── Plot settings ─────────────────────────────────────────────────
+plot:
+  figure_width_mm: 180
+  dpi: 300
+  font_family: "serif"
+  font_size: 9
+  title_size: 10
+  label_size: 9
+  tick_size: 8
+  legend_size: 7.5
+  output_formats: ["pdf", "svg", "png"]
+  format: "pdf"
+  line_width: 1.5
+  fill_alpha: 0.15
+  file_prefix: "britz_"

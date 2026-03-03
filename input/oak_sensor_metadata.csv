@@ -1,0 +1,9 @@
+sensor_id,tree_species,britz_tree_nr,palm_tree_id,position,position_code,sensor_hw_id,channel,sol,remarks,leaf_col,air_col
+1,Oak,49,564,Crown top North,1N,2043,1,n,,Leaf1,Air1
+2,Oak,49,564,Crown top South,2S,2044,2,y,,Leaf2,Air2
+3,Oak,49,564,South lower,3S,2045,3,y,,Leaf3,Air3
+4,Oak,49,564,South lowest,4S,2046,4,y,,Leaf4,Air4
+5,Oak,126,519,Crown top North,1N,2047,5,y,,Leaf5,Air5
+6,Oak,126,519,Crown top South,2S,2048,6,n,ERROR since 2024-08-31 09:20,Leaf6,Air6
+7,Oak,126,519,South lower,3S,2049,7,y,Leaf fallen still on sensor,Leaf7,Air7
+8,Oak,126,519,South lowest,4S,2050,8,y,Leaf fallen still on sensor,Leaf8,Air8

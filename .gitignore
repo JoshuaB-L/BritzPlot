@@ -1,0 +1,22 @@
+# Output plots
+output/*.png
+output/*.pdf
+output/*.svg
+output/*.csv
+
+# Large binary driver files
+output/drivers/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / IDE
+.DS_Store
+*~
+*.swp
+.vscode/
+
+# Flow task specs
+prompt/
