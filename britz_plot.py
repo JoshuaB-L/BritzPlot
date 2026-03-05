@@ -29,6 +29,8 @@ import matplotlib.ticker as ticker
 from matplotlib.lines import Line2D
 import mpl_toolkits.axisartist.floating_axes as FA
 import mpl_toolkits.axisartist.grid_finder as GF
+from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+import matplotlib.font_manager as fm
 import netCDF4 as nc
 import numpy as np
 import pandas as pd
@@ -1095,6 +1097,224 @@ def split_tree_mask_north_south(tree_mask):
           f"north={n_north} voxels, south={n_south} voxels")
 
     return north_mask, south_mask
+
+
+def split_tree_mask_vertical_layers(tree_mask, n_layers=3):
+    """Split a 3D tree mask into vertical layers by z-extent.
+
+    Parameters
+    ----------
+    tree_mask : numpy.ndarray
+        Boolean mask of shape (zlad, y, x).
+    n_layers : int
+        Number of vertical layers (default 3: lower, middle, upper).
+
+    Returns
+    -------
+    layers : list of numpy.ndarray
+        List of boolean masks, one per layer (lower first, upper last).
+    """
+    zz = np.where(tree_mask.any(axis=(1, 2)))[0]
+    if len(zz) == 0:
+        return [np.zeros_like(tree_mask, dtype=bool)] * n_layers
+
+    z_splits = np.array_split(zz, n_layers)
+    layers = []
+    for z_group in z_splits:
+        layer = np.zeros_like(tree_mask, dtype=bool)
+        for zi in z_group:
+            layer[zi, :, :] = tree_mask[zi, :, :]
+        layers.append(layer)
+
+    counts = [int(np.sum(l)) for l in layers]
+    print(f"  Vertical layers ({n_layers}): voxels {counts}, "
+          f"z-ranges {[f'{g[0]}-{g[-1]}' for g in z_splits]}")
+
+    return layers
+
+
+def plot_tree_crown_3d_voxel(cfg, plot_cfg, plot_dir):
+    """Render 3D voxel plot of tree crown masks with N/S split and vertical layers.
+
+    For each configured tree_id, builds the 3D mask, splits into north/south
+    halves and 3 vertical layers, then renders with ``ax.voxels()``.  South
+    side shows all layers active (coloured); north side shows only the upper
+    layer active with middle/lower greyed out.
+
+    Parameters
+    ----------
+    cfg : dict
+        Full configuration (needs paths, leaf_temp sections).
+    plot_cfg : dict
+        Plot settings from config.yml.
+    plot_dir : str or Path
+        Output directory for saved figures.
+    """
+    static_path = cfg["paths"]["static_driver"]
+    tree_configs = cfg["leaf_temp"]["tree_ids"]
+
+    # Layer colours: lower=blue, middle=green, upper=red/orange
+    layer_colors = [
+        np.array([0.267, 0.467, 0.667, 0.8]),   # TOL_BLUE-ish RGBA
+        np.array([0.133, 0.533, 0.200, 0.8]),   # TOL_GREEN-ish RGBA
+        np.array([0.933, 0.400, 0.467, 0.8]),   # TOL_RED-ish RGBA
+    ]
+    grey_inactive = np.array([0.73, 0.73, 0.73, 0.2])
+    layer_names = ["Lower", "Middle", "Upper"]
+
+    # Load static driver for z-coordinates
+    ds = nc.Dataset(str(static_path), "r")
+    if "zlad" in ds.variables:
+        zlad_m = np.asarray(ds.variables["zlad"][:])
+    else:
+        zlad_m = None
+    if "x" in ds.variables:
+        x_m = np.asarray(ds.variables["x"][:])
+    else:
+        x_m = None
+    if "y" in ds.variables:
+        y_m = np.asarray(ds.variables["y"][:])
+    else:
+        y_m = None
+    ds.close()
+
+    for tree_name, tcfg in tree_configs.items():
+        tid = tcfg["palm_tree_id"]
+        britz_id = tcfg.get("britz_id", tid)
+
+        print(f"  3D voxel plot for tree {britz_id} (palm_tree_id={tid}) ...")
+        tree_mask, _ = build_tree_id_mask(static_path, tid)
+
+        north_mask, south_mask = split_tree_mask_north_south(tree_mask)
+        layers = split_tree_mask_vertical_layers(tree_mask, n_layers=3)
+
+        # Verify voxel conservation
+        total_orig = int(np.sum(tree_mask))
+        total_layers = sum(int(np.sum(l)) for l in layers)
+        if total_orig != total_layers:
+            print(f"  [WARN] Voxel mismatch: original={total_orig}, "
+                  f"layers={total_layers}")
+
+        # Crop to bounding box with 1-cell padding
+        zz, yy, xx = np.where(tree_mask)
+        z0, z1 = max(zz.min() - 1, 0), min(zz.max() + 2, tree_mask.shape[0])
+        y0, y1 = max(yy.min() - 1, 0), min(yy.max() + 2, tree_mask.shape[1])
+        x0, x1 = max(xx.min() - 1, 0), min(xx.max() + 2, tree_mask.shape[2])
+
+        nz = z1 - z0
+        ny = y1 - y0
+        nx = x1 - x0
+
+        # Build filled and facecolors arrays
+        filled = np.zeros((nz, ny, nx), dtype=bool)
+        facecolors = np.zeros((nz, ny, nx, 4))
+
+        for li, layer in enumerate(layers):
+            layer_crop = layer[z0:z1, y0:y1, x0:x1]
+
+            # South: active with colour
+            south_crop = south_mask[z0:z1, y0:y1, x0:x1]
+            south_active = layer_crop & south_crop
+            filled |= south_active
+            facecolors[south_active] = layer_colors[li]
+
+            # North: upper active, middle/lower greyed out
+            north_crop = north_mask[z0:z1, y0:y1, x0:x1]
+            north_active = layer_crop & north_crop
+            filled |= north_active
+            if li == 2:  # upper layer
+                facecolors[north_active] = layer_colors[li]
+            else:  # middle/lower greyed
+                facecolors[north_active] = grey_inactive
+
+        # Build axis coordinates in physical units
+        if x_m is not None and y_m is not None:
+            dx = float(x_m[1] - x_m[0]) if len(x_m) > 1 else 1.0
+            x_coords = x_m[x0:x1]
+            y_coords = y_m[y0:y1]
+        else:
+            dx = 1.0
+            x_coords = np.arange(x0, x1) * dx
+            y_coords = np.arange(y0, y1) * dx
+
+        if zlad_m is not None:
+            z_coords = zlad_m[z0:z1]
+        else:
+            z_coords = np.arange(z0, z1, dtype=float)
+
+        # Create figure
+        fig_w = mm_to_inches(plot_cfg.get("figure_width_mm", 180))
+        fig = plt.figure(figsize=(fig_w, fig_w * 0.85))
+        ax = fig.add_subplot(111, projection="3d")
+
+        # Edge colors: thin grey for definition
+        edge_rgba = np.zeros(filled.shape + (4,))
+        edge_rgba[filled] = [0.4, 0.4, 0.4, 0.3]
+
+        ax.voxels(filled, facecolors=facecolors, edgecolors=edge_rgba,
+                  linewidth=0.3)
+
+        ax.view_init(elev=30, azim=-60)
+        ax.set_box_aspect([nx, ny, nz])
+
+        # Axis labels with physical coordinates
+        n_xticks = min(5, nx)
+        n_yticks = min(5, ny)
+        n_zticks = min(5, nz)
+
+        xt = np.linspace(0, nx, n_xticks)
+        yt = np.linspace(0, ny, n_yticks)
+        zt = np.linspace(0, nz, n_zticks)
+
+        ax.set_xticks(xt)
+        ax.set_xticklabels([f"{x_coords[0] + t * dx:.0f}"
+                            for t in xt], fontsize=6)
+        ax.set_yticks(yt)
+        ax.set_yticklabels([f"{y_coords[0] + t * dx:.0f}"
+                            for t in yt], fontsize=6)
+        ax.set_zticks(zt)
+        if zlad_m is not None:
+            dz = float(zlad_m[1] - zlad_m[0]) if len(zlad_m) > 1 else 1.0
+            ax.set_zticklabels([f"{z_coords[0] + t * dz:.1f}"
+                                for t in zt], fontsize=6)
+        else:
+            ax.set_zticklabels([f"{z0 + t:.0f}" for t in zt], fontsize=6)
+
+        lbl_size = plot_cfg.get("label_size", 9)
+        ax.set_xlabel("x (m)", fontsize=lbl_size, labelpad=8)
+        ax.set_ylabel("y (m)", fontsize=lbl_size, labelpad=8)
+        ax.set_zlabel("z (m)", fontsize=lbl_size, labelpad=8)
+
+        ax.set_title(
+            f"Tree Crown Voxel Mask — Tree {britz_id} (N/S Split, 3 Layers)",
+            fontsize=plot_cfg.get("title_size", 10), pad=12,
+        )
+
+        # Legend with color patches
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor=layer_colors[2][:3], alpha=0.8,
+                  label="Upper (S+N active)"),
+            Patch(facecolor=layer_colors[1][:3], alpha=0.8,
+                  label="Middle (S active)"),
+            Patch(facecolor=layer_colors[0][:3], alpha=0.8,
+                  label="Lower (S active)"),
+            Patch(facecolor=grey_inactive[:3], alpha=0.3,
+                  label="N middle/lower (inactive)"),
+        ]
+        ax.legend(
+            handles=legend_elements,
+            loc="upper left",
+            fontsize=plot_cfg.get("legend_size", 7.5),
+            framealpha=0.9,
+        )
+
+        # Save at 600 DPI minimum (3D rasterizes in vector formats)
+        fig.set_dpi(max(plot_cfg.get("dpi", 300), 600))
+        fig.tight_layout()
+        _save_figure(fig, plot_dir,
+                     f"tree_crown_3d_voxel_{britz_id}", plot_cfg)
+        print(f"  3D voxel plot for tree {britz_id} complete.")
 
 
 # =============================================================================
@@ -2966,6 +3186,198 @@ def export_statistics_latex(stats_df, outdir):
 
 
 # =============================================================================
+# Spatial location map
+# =============================================================================
+
+def plot_spatial_location_map(cfg, plot_cfg, plot_dir):
+    """Plot plan-view map of PALM domain with tree crowns, met tower, and soil stations.
+
+    Shows the forest canopy structure (LAD sum) as background with overlaid
+    markers for instrumented trees, the meteorological tower, and lysimeter
+    soil observation stations.
+
+    Parameters
+    ----------
+    cfg : dict
+        Full configuration dict (needs paths, palm, leaf_temp, met_tower, soil).
+    plot_cfg : dict
+        Plot settings from config.yml.
+    plot_dir : str or Path
+        Output directory for saved figures.
+    """
+    static_path = cfg["paths"]["static_driver"]
+    palm_cfg = cfg["palm"]
+    origin_E = palm_cfg["origin_E"]
+    origin_N = palm_cfg["origin_N"]
+
+    # Load static driver fields
+    ds = nc.Dataset(str(static_path), "r")
+    tree_id = np.asarray(ds.variables["tree_id"][:])
+    lad = np.asarray(ds.variables["lad"][:])  # shape: (zlad, y, x)
+    x_m = np.asarray(ds.variables["x"][:])
+    y_m = np.asarray(ds.variables["y"][:])
+    ds.close()
+
+    # Grid spacing from coordinate arrays
+    dx = float(x_m[1] - x_m[0]) if len(x_m) > 1 else 1.0
+    dy = float(y_m[1] - y_m[0]) if len(y_m) > 1 else 1.0
+
+    # LAD column sum for background
+    lad_sum = np.sum(np.where(lad > 0, lad, 0), axis=0)  # shape: (y, x)
+
+    # UTM transformer for lat/lon -> grid offsets
+    transformer = pyproj.Transformer.from_crs(
+        "EPSG:4326", "EPSG:25833", always_xy=True
+    )
+
+    fig_w = mm_to_inches(plot_cfg.get("figure_width_mm", 180))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_w * 0.9))
+
+    # Background: LAD sum
+    im = ax.pcolormesh(
+        x_m, y_m, lad_sum,
+        cmap="YlGn", shading="auto", zorder=0,
+    )
+    cbar = fig.colorbar(im, ax=ax, shrink=0.7, pad=0.02)
+    cbar.set_label(r"LAD column sum (m$^2$ m$^{-2}$)", fontsize=plot_cfg.get("label_size", 9))
+
+    # Plot tree crown footprints from tree_id field
+    tree_configs = cfg["leaf_temp"]["tree_ids"]
+    tree_colors = {0: TOL_BLUE, 1: TOL_RED}
+    legend_handles = []
+
+    for idx, (tree_name, tcfg) in enumerate(tree_configs.items()):
+        tid = tcfg["palm_tree_id"]
+        # tree_id has shape (zlad, y, x); project to 2D
+        tid_2d = np.any(tree_id == tid, axis=0)  # (y, x)
+        yy, xx = np.where(tid_2d)
+
+        if len(xx) == 0:
+            print(f"  [WARN] tree_id {tid} not found in static driver")
+            continue
+
+        color = tree_colors.get(idx, TOL_PURPLE)
+
+        # Plot footprint cells as filled rectangles
+        for yi, xi in zip(yy, xx):
+            rect = plt.Rectangle(
+                (x_m[xi] - dx / 2, y_m[yi] - dy / 2), dx, dy,
+                facecolor=color, edgecolor="none", alpha=0.5, zorder=2,
+            )
+            ax.add_patch(rect)
+
+        # Centroid for label
+        cx = np.mean(x_m[xx])
+        cy = np.mean(y_m[yy])
+        britz_id = tcfg.get("britz_id", tid)
+        label = f"{tree_name.replace('_', ' ').title()} (ID {britz_id})"
+        ax.annotate(
+            label, (cx, cy),
+            textcoords="offset points", xytext=(8, 8),
+            fontsize=plot_cfg.get("legend_size", 7.5),
+            color=color, fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=color,
+                      alpha=0.8, lw=0.5),
+            zorder=5,
+        )
+        legend_handles.append(
+            plt.Rectangle((0, 0), 1, 1, fc=color, alpha=0.5,
+                          label=f"Tree {britz_id} ({tree_name})")
+        )
+
+    # Plot met tower
+    met_cfg = cfg.get("met_tower", {})
+    if met_cfg.get("enabled", False):
+        tower_lat = met_cfg["tower_lat"]
+        tower_lon = met_cfg["tower_lon"]
+        e, n = transformer.transform(tower_lon, tower_lat)
+        tower_x = e - origin_E
+        tower_y = n - origin_N
+        ax.plot(
+            tower_x, tower_y, marker="*", markersize=14, color=TOL_YELLOW,
+            markeredgecolor="black", markeredgewidth=0.8, zorder=4,
+        )
+        ax.annotate(
+            "Met Tower", (tower_x, tower_y),
+            textcoords="offset points", xytext=(10, -12),
+            fontsize=plot_cfg.get("legend_size", 7.5), fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=TOL_YELLOW,
+                      alpha=0.8, lw=0.5),
+            zorder=5,
+        )
+        legend_handles.append(
+            Line2D([0], [0], marker="*", color="w", markerfacecolor=TOL_YELLOW,
+                   markeredgecolor="black", markersize=12,
+                   label="Met tower (10 m)")
+        )
+
+    # Plot soil observation stations (lysimeters)
+    soil_cfg = cfg.get("soil", {})
+    station_cfg = soil_cfg.get("stations", {})
+    for sid, scfg in station_cfg.items():
+        e, n = transformer.transform(scfg["lon"], scfg["lat"])
+        sx = e - origin_E
+        sy = n - origin_N
+        ax.plot(
+            sx, sy, marker="o", markersize=8, color=TOL_CYAN,
+            markeredgecolor="black", markeredgewidth=0.8, zorder=4,
+        )
+        ax.annotate(
+            scfg.get("label", sid), (sx, sy),
+            textcoords="offset points", xytext=(8, 6),
+            fontsize=plot_cfg.get("legend_size", 7.5) - 0.5,
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=TOL_CYAN,
+                      alpha=0.8, lw=0.5),
+            zorder=5,
+        )
+
+    if station_cfg:
+        legend_handles.append(
+            Line2D([0], [0], marker="o", color="w", markerfacecolor=TOL_CYAN,
+                   markeredgecolor="black", markersize=8,
+                   label="Soil stations (lysimeters)")
+        )
+
+    # Scale bar (50 m)
+    scalebar = AnchoredSizeBar(
+        ax.transData, 50, "50 m", loc="lower right",
+        pad=0.5, borderpad=0.4, sep=4,
+        frameon=True, size_vertical=1.0,
+        fontproperties=fm.FontProperties(
+            size=plot_cfg.get("legend_size", 7.5)
+        ),
+    )
+    ax.add_artist(scalebar)
+
+    # North arrow
+    arrow_x = x_m[-1] - 10
+    arrow_y = y_m[-1] - 10
+    ax.annotate(
+        "N", xy=(arrow_x, arrow_y), xytext=(arrow_x, arrow_y - 20),
+        fontsize=10, fontweight="bold", ha="center",
+        arrowprops=dict(arrowstyle="->", lw=1.5, color="black"),
+        zorder=5,
+    )
+
+    ax.set_aspect("equal")
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
+    ax.set_title("PALM Domain: Instrumentation and Tree Crown Locations")
+
+    if legend_handles:
+        ax.legend(
+            handles=legend_handles,
+            loc="upper left",
+            fontsize=plot_cfg.get("legend_size", 7.5),
+            framealpha=0.9,
+        )
+
+    fig.tight_layout()
+    _save_figure(fig, plot_dir, "spatial_location_map", plot_cfg)
+    print("  Spatial location map complete.")
+
+
+# =============================================================================
 # Main orchestration
 # =============================================================================
 
@@ -3454,6 +3866,15 @@ def main():
 
     if toggles.get("cross_correlation_lag", False):
         print("  [SKIP] cross_correlation_lag — not yet implemented")
+
+    # ---- Phase 6: Visualization ----
+    if toggles.get("spatial_location_map", False):
+        print("\nPhase 6: Spatial location map ...")
+        plot_spatial_location_map(cfg, plot_cfg, plot_dir)
+
+    if toggles.get("tree_crown_3d_voxel", False):
+        print("\nPhase 6: 3D voxel plot of tree crown masks ...")
+        plot_tree_crown_3d_voxel(cfg, plot_cfg, plot_dir)
 
     print("\nPipeline complete.")
 
