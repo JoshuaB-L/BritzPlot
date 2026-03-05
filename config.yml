@@ -92,6 +92,61 @@ analysis_toggles:
   dendrometer_twd: true
   mds_vs_transpiration: true
   cross_correlation_lag: true
+  # Phase 5: Met Tower
+  met_tower_temperature: true
+  met_tower_humidity: true
+  met_tower_wind: true
+  met_tower_radiation: true
+  # Phase 6: Visualization
+  spatial_location_map: true
+  tree_crown_3d_voxel: true
+  # Phase 7: Creative
+  diurnal_composites: true
+  vertical_profiles: true
+
+# ── Met tower comparison ────────────────────────────────────────────
+met_tower:
+  enabled: true
+  tower_data_dir: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv"
+  variables:
+    air_temperature:
+      files: ["britz_ta_2m_E14071.csv", "britz_ta_2m_E16534.csv", "britz_ta_8m.csv", "britz_ta_10m.csv"]
+      heights_m: [2, 2, 8, 10]
+      unit: "deg C"
+    relative_humidity:
+      files: ["britz_hur_2m_E14071.csv", "britz_hur_2m_E16534.csv", "britz_hur_8m.csv", "britz_hur_10m.csv"]
+      heights_m: [2, 2, 8, 10]
+      unit: "%"
+    wind_speed:
+      files: ["britz_wspeed_3m.csv", "britz_wspeed_10m.csv"]
+      heights_m: [3, 10]
+      unit: "m/s"
+    wind_direction:
+      files: ["britz_wdir_3m.csv", "britz_wdir_10m.csv"]
+      heights_m: [3, 10]
+      unit: "degrees"
+    shortwave_down:
+      files: ["britz_rsd_2m.csv", "britz_rsd_8m.csv"]
+      heights_m: [2, 8]
+      unit: "W/m2"
+    shortwave_up:
+      files: ["britz_rsu_2m.csv", "britz_rsu_8m.csv"]
+      heights_m: [2, 8]
+      unit: "W/m2"
+  height_to_palm_z:
+    2: 19.5
+    3: 20.5
+    8: 25.5
+    10: 27.5
+  tower_lat: 52.8779
+  tower_lon: 13.8348
+  icon_d2:
+    enabled: false
+    dynamic_driver_path: ""
+  temporal_averaging:
+    temp_humidity: "15T"
+    wind: "15T"
+    radiation: "10T"
 
 # ── Plot settings ─────────────────────────────────────────────────
 plot:

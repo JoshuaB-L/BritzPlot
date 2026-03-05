@@ -65,6 +65,10 @@ def load_config(config_path):
         if section not in cfg:
             sys.exit(f"ERROR: missing '{section}' section in config.")
 
+    # Ensure met_tower section defaults
+    if "met_tower" not in cfg:
+        cfg["met_tower"] = {"enabled": False}
+
     Path(cfg["paths"]["output_dir"]).mkdir(parents=True, exist_ok=True)
     return cfg
 
@@ -351,6 +355,383 @@ def align_time_axes(palm_time_seconds, obs_time_datetime, reference_time):
 
 
 # =============================================================================
+# Met tower observation loading
+# =============================================================================
+
+def load_tower_csv(csv_path, time_start, time_end):
+    """Load a single met tower observation CSV file.
+
+    Tower CSVs use semicolon-delimited format with 'DATE (DD.MM.YYYY)' and
+    'TIME (UTC) (HH:MM:SS)' columns.  Returns a pd.Series with
+    DatetimeIndex containing the first numeric data column, filtered to
+    the requested time window.
+
+    Parameters
+    ----------
+    csv_path : str or Path
+        Path to the tower CSV file.
+    time_start, time_end : str
+        Simulation time window boundaries (parseable by pd.Timestamp).
+
+    Returns
+    -------
+    pd.Series or None
+        Time-filtered observation series, or None if loading fails.
+    """
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        print(f"  [WARN] Tower CSV not found: {csv_path}")
+        return None
+
+    t0 = pd.Timestamp(time_start)
+    t1 = pd.Timestamp(time_end)
+
+    with open(csv_path, "r", encoding="utf-8", errors="ignore") as fh:
+        raw_lines = fh.readlines()
+
+    # Find the header row starting with 'DATE'
+    header_idx = None
+    for i, line in enumerate(raw_lines):
+        if line.strip().startswith("DATE"):
+            header_idx = i
+            break
+    if header_idx is None:
+        print(f"  [WARN] No DATE header found in {csv_path}")
+        return None
+
+    header_parts = [c.strip() for c in raw_lines[header_idx].strip().split(";")]
+    col_map = {name: idx for idx, name in enumerate(header_parts)}
+
+    date_col = "DATE (DD.MM.YYYY)"
+    time_col = "TIME (UTC) (HH:MM:SS)"
+    if date_col not in col_map or time_col not in col_map:
+        print(f"  [WARN] Required datetime columns missing in {csv_path}")
+        return None
+
+    date_idx = col_map[date_col]
+    time_idx_col = col_map[time_col]
+
+    # Identify the first numeric data column (not DATE/TIME)
+    data_idx = None
+    for name, idx in col_map.items():
+        if idx not in (date_idx, time_idx_col):
+            data_idx = idx
+            break
+    if data_idx is None:
+        print(f"  [WARN] No data column found in {csv_path}")
+        return None
+
+    invalid_vals = {"-9999.00", "-999.00", "-99.00", "", "NaN", "nan"}
+    timestamps, values = [], []
+    max_idx = max(date_idx, time_idx_col, data_idx)
+
+    for line in raw_lines[header_idx + 1:]:
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(";")
+        if len(parts) <= max_idx:
+            continue
+        data_str = parts[data_idx].strip()
+        if data_str in invalid_vals:
+            continue
+        try:
+            dt = pd.to_datetime(
+                f"{parts[date_idx].strip()} {parts[time_idx_col].strip()}",
+                format="%d.%m.%Y %H:%M:%S",
+            )
+            val = float(data_str)
+        except (ValueError, TypeError):
+            continue
+        if not np.isfinite(val):
+            continue
+        timestamps.append(dt)
+        values.append(val)
+
+    if not timestamps:
+        print(f"  [WARN] No valid data in {csv_path}")
+        return None
+
+    s = pd.Series(values, index=pd.DatetimeIndex(timestamps))
+    s = s[s.index.notna()]
+    s = s[(s.index >= t0) & (s.index <= t1)]
+    if s.empty:
+        print(f"  [WARN] No data in time window for {csv_path}")
+        return None
+    return s
+
+
+# =============================================================================
+# ICON-D2 dynamic driver loading (netCDF4 only)
+# =============================================================================
+
+def _dd_height_to_z_index(target_height):
+    """Map observation height (m) to dynamic driver z-index (5 m grid)."""
+    if target_height <= 3.0:
+        return 0
+    elif target_height <= 9.0:
+        return 1
+    elif target_height <= 12.0:
+        return 1
+    else:
+        return max(0, min(int((target_height - 2.5) / 5.0), 79))
+
+
+def _average_boundary_forcing_nc(ds, variable_base, z_index, t_idx):
+    """Average ls_forcing_{left,right,south,north}_{var} at given z and t.
+
+    Parameters
+    ----------
+    ds : netCDF4.Dataset
+        Open dynamic-driver file.
+    variable_base : str
+        Base variable name (e.g. 'pt', 'qv', 'u', 'v', 'w').
+    z_index : int
+        Vertical grid index.
+    t_idx : int
+        Time index.
+
+    Returns
+    -------
+    float
+        Mean across the four walls, or np.nan if unavailable.
+    """
+    vals = []
+    for wall in ("left", "right", "south", "north"):
+        vname = f"ls_forcing_{wall}_{variable_base}"
+        if vname not in ds.variables:
+            continue
+        var = ds.variables[vname]
+        zdim = "zw" if variable_base == "w" else "z"
+        dim_names = var.dimensions
+        if zdim not in dim_names:
+            continue
+        zi = list(dim_names).index(zdim)
+        if z_index >= var.shape[zi]:
+            continue
+        # Build index slices
+        slices = []
+        for d in dim_names:
+            if d == "time":
+                slices.append(t_idx)
+            elif d == zdim:
+                slices.append(z_index)
+            else:
+                slices.append(slice(None))
+        chunk = var[tuple(slices)]
+        mean_val = float(np.nanmean(chunk))
+        if np.isfinite(mean_val):
+            vals.append(mean_val)
+    return np.mean(vals) if vals else np.nan
+
+
+def load_icon_d2_boundary_mean(driver_path, variable_name, target_height,
+                                time_start, time_end):
+    """Load ICON-D2 boundary-mean profile from a PALM dynamic driver.
+
+    Reads ``ls_forcing_{left,right,south,north}_{var}`` variables, averages
+    across the four walls at the z-level closest to *target_height*, and
+    returns a time series.  Uses netCDF4 only (no xarray).
+
+    Parameters
+    ----------
+    driver_path : str or Path
+        Path to the dynamic driver NetCDF file.
+    variable_name : str
+        One of 'air_temperature', 'relative_humidity', 'wind_speed',
+        'wind_direction'.
+    target_height : float
+        Observation height in metres for z-index mapping.
+    time_start, time_end : str
+        Time window boundaries.
+
+    Returns
+    -------
+    pd.Series or None
+        Boundary-mean time series, or None on failure.
+    """
+    driver_path = Path(driver_path)
+    if not driver_path.exists():
+        print(f"  [WARN] Dynamic driver not found: {driver_path}")
+        return None
+
+    t0 = pd.Timestamp(time_start)
+    t1 = pd.Timestamp(time_end)
+    z_idx = _dd_height_to_z_index(target_height)
+
+    try:
+        ds = nc.Dataset(str(driver_path), "r")
+    except Exception as e:
+        print(f"  [WARN] Cannot open dynamic driver: {e}")
+        return None
+
+    try:
+        n_times = ds.dimensions["time"].size
+        # Build time axis: try 'time' variable, fall back to hourly from t0
+        if "time" in ds.variables:
+            raw_t = ds.variables["time"][:]
+            times = t0 + pd.to_timedelta(raw_t, unit="s")
+        else:
+            times = pd.date_range(start=t0, periods=n_times, freq="H")
+
+        values = []
+        for ti in range(n_times):
+            if variable_name == "air_temperature":
+                v = _average_boundary_forcing_nc(ds, "pt", z_idx, ti)
+                if np.isfinite(v) and v > 200:
+                    v -= 273.15
+            elif variable_name == "relative_humidity":
+                qv = _average_boundary_forcing_nc(ds, "qv", z_idx, ti)
+                pt = _average_boundary_forcing_nc(ds, "pt", z_idx, ti)
+                if np.isfinite(qv) and np.isfinite(pt):
+                    tc = pt - 273.15 if pt > 200 else pt
+                    p_hpa = 1013.25 * (1 - 0.0065 * target_height / 288.15) ** 5.255
+                    es = 6.112 * np.exp(17.67 * tc / (tc + 243.5))
+                    ws = 0.622 * es / (p_hpa - es)
+                    v = 100.0 * qv / ws if ws > 0 else np.nan
+                else:
+                    v = np.nan
+            elif variable_name == "wind_speed":
+                u = _average_boundary_forcing_nc(ds, "u", z_idx, ti)
+                vv = _average_boundary_forcing_nc(ds, "v", z_idx, ti)
+                v = np.sqrt(u**2 + vv**2) if np.isfinite(u) and np.isfinite(vv) else np.nan
+            elif variable_name == "wind_direction":
+                u = _average_boundary_forcing_nc(ds, "u", z_idx, ti)
+                vv = _average_boundary_forcing_nc(ds, "v", z_idx, ti)
+                if np.isfinite(u) and np.isfinite(vv):
+                    v = (270.0 - np.degrees(np.arctan2(vv, u))) % 360.0
+                else:
+                    v = np.nan
+            else:
+                v = np.nan
+            values.append(v)
+
+        ds.close()
+    except Exception as e:
+        ds.close()
+        print(f"  [WARN] Error reading dynamic driver: {e}")
+        return None
+
+    s = pd.Series(values, index=times).dropna()
+    s = s[(s.index >= t0) & (s.index <= t1)]
+    return s if not s.empty else None
+
+
+# =============================================================================
+# Met tower grid cell and PALM extraction
+# =============================================================================
+
+def calculate_met_tower_grid_cell(tower_lat, tower_lon, data, origin_E,
+                                  origin_N):
+    """Calculate the PALM grid cell for the met tower location.
+
+    Converts tower lat/lon to UTM 33N (EPSG:25833), computes offset from the
+    PALM domain origin, and finds the nearest (iy, ix) in the grid coordinate
+    arrays.
+
+    Parameters
+    ----------
+    tower_lat, tower_lon : float
+        Met tower WGS 84 coordinates.
+    data : dict
+        Merged PALM data containing ``"x"`` and ``"y"`` coordinate arrays,
+        plus ``"zu_3d"`` for the vertical grid.
+    origin_E, origin_N : float
+        PALM domain origin in UTM 33N (metres).
+
+    Returns
+    -------
+    ix, iy : int
+        Grid indices in x and y directions.
+    """
+    transformer = pyproj.Transformer.from_crs(
+        "EPSG:4326", "EPSG:25833", always_xy=True
+    )
+    easting, northing = transformer.transform(tower_lon, tower_lat)
+
+    dx_m = easting - origin_E
+    dy_m = northing - origin_N
+
+    x = np.asarray(data["x"])
+    y = np.asarray(data["y"])
+    ix = int(np.argmin(np.abs(x - dx_m)))
+    iy = int(np.argmin(np.abs(y - dy_m)))
+
+    zu = np.asarray(data["zu_3d"]) if "zu_3d" in data else None
+    z_info = f", z-levels: 0..{zu[-1]:.0f} m ({len(zu)} levels)" if zu is not None else ""
+    print(f"  Met tower at lat={tower_lat}, lon={tower_lon} "
+          f"-> grid cell (iy={iy}, ix={ix}){z_info}")
+
+    # Verify within domain (not at boundary)
+    if ix <= 0 or ix >= len(x) - 1 or iy <= 0 or iy >= len(y) - 1:
+        print(f"  [WARN] Met tower grid cell is at domain boundary!")
+
+    return ix, iy
+
+
+def _find_z_index(zu, target_height):
+    """Find nearest zu_3d index for a target height in metres."""
+    return int(np.argmin(np.abs(np.asarray(zu) - target_height)))
+
+
+def extract_palm_at_tower(data, ix, iy, height_to_palm_z, variables,
+                          reference_time):
+    """Extract PALM variables at the met tower grid cell for multiple heights.
+
+    Parameters
+    ----------
+    data : dict
+        Merged PALM data from :func:`load_palm_restart_series`.
+    ix, iy : int
+        Grid cell indices for the met tower location.
+    height_to_palm_z : dict
+        Mapping from tower observation height (m) to PALM z-coordinate (m),
+        e.g. ``{2: 19.5, 3: 20.5, 8: 25.5, 10: 27.5}``.
+    variables : list of str
+        PALM variable names to extract (e.g. ``["ta", "rh", "wspeed"]``).
+    reference_time : str
+        Reference datetime for converting PALM time to DatetimeIndex.
+
+    Returns
+    -------
+    result : dict
+        ``{(variable, tower_height): pd.Series}`` with DatetimeIndex.
+        Also includes ``"palm_times"`` key with the DatetimeIndex.
+    """
+    zu = np.asarray(data["zu_3d"])
+    ref = pd.to_datetime(reference_time)
+
+    # Build PALM DatetimeIndex
+    palm_t = np.round(np.asarray(data["time"]) / 900.0) * 900.0
+    palm_dt = ref + pd.to_timedelta(palm_t, unit="s")
+    palm_idx = pd.DatetimeIndex(palm_dt)
+
+    result = {"palm_times": palm_idx}
+
+    for var in variables:
+        if var not in data:
+            print(f"  [WARN] Variable '{var}' not found in PALM data")
+            continue
+
+        arr = data[var]  # shape: (time, z, y, x)
+
+        for tower_h, palm_z in height_to_palm_z.items():
+            tower_h = int(tower_h) if isinstance(tower_h, str) else tower_h
+            zi = _find_z_index(zu, palm_z)
+
+            ts = arr[:, zi, iy, ix]
+            ts = np.ma.filled(ts, fill_value=np.nan)
+            ts = np.where(np.isclose(ts, -999999.0), np.nan, ts)
+            series = pd.Series(ts.astype(float), index=palm_idx, name=f"{var}_{tower_h}m")
+            result[(var, tower_h)] = series
+
+        print(f"  Extracted '{var}' at {len(height_to_palm_z)} heights, "
+              f"{len(palm_idx)} timesteps")
+
+    return result
+
+
+# =============================================================================
 # Soil observation loading and depth-matching
 # =============================================================================
 
@@ -593,7 +974,7 @@ def build_tree_id_mask(static_path, palm_tree_id):
 
     return mask, voxels
 
-
+#TODO - Need to find out if the mask is split into 3 vertical layers for North/South half of the tree, to match the 3 leaf/air sensor pairs.
 def extract_palm_ta_at_tree(palm_3d_data, tree_mask, reference_time):
     """Extract PALM air temperature at tree crown from 3D output.
 
@@ -1715,6 +2096,472 @@ def export_leaf_temp_statistics_csv(all_stats, outdir):
 
 
 # =============================================================================
+# Met tower comparison plots
+# =============================================================================
+
+def _annotate_stats(ax, stats, plot_cfg):
+    """Add RMSE/MBE/R/KGE stats annotation box to an axis."""
+    ann = (f"RMSE={stats['rmse']:.2f}  MBE={stats['mbe']:.2f}\n"
+           f"R={stats['r']:.3f}  KGE={stats['kge']:.3f}  n={stats['n_valid']}")
+    ax.text(0.02, 0.95, ann, transform=ax.transAxes,
+            fontsize=plot_cfg.get("legend_size", 7.5),
+            va="top", ha="left",
+            bbox=dict(facecolor="white", alpha=0.8,
+                      edgecolor="#CCCCCC", boxstyle="round,pad=0.3"))
+
+
+def _met_tower_subplot_layout(n_heights, plot_cfg):
+    """Create figure with n_heights vertically stacked subplots."""
+    fig_w = mm_to_inches(plot_cfg["figure_width_mm"])
+    fig_h = fig_w * 0.35 * max(n_heights, 2)
+    fig, axes = plt.subplots(n_heights, 1, figsize=(fig_w, fig_h),
+                              sharex=True, squeeze=False)
+    return fig, axes
+
+
+def _align_tower_to_palm(obs_series, palm_series, avg_rule):
+    """Resample tower obs to avg_rule, then align with PALM series."""
+    if obs_series is None or palm_series is None:
+        return None, None, {"rmse": np.nan, "mbe": np.nan, "r": np.nan,
+                            "kge": np.nan, "nse": np.nan, "n_valid": 0}
+    obs_rs = obs_series.resample(avg_rule).mean().dropna()
+    palm_rs = palm_series.copy()
+    common = obs_rs.index.intersection(palm_rs.index).sort_values()
+    if len(common) < 3:
+        return obs_rs, palm_rs, {"rmse": np.nan, "mbe": np.nan, "r": np.nan,
+                                  "kge": np.nan, "nse": np.nan, "n_valid": 0}
+    stats = compute_statistics(obs_rs.reindex(common).values,
+                               palm_rs.reindex(common).values)
+    return obs_rs, palm_rs, stats
+
+
+def plot_met_tower_temperature(tower_obs, palm_data, icon_data, stats_list,
+                                plot_cfg, outdir, met_cfg):
+    """Plot met tower temperature comparison: obs vs PALM vs optional ICON-D2.
+
+    One subplot per observation height. Returns list of stats dicts.
+    """
+    heights = sorted(set(tower_obs.get("air_temperature", {}).keys()))
+    if not heights:
+        print("  [SKIP] No temperature observations loaded")
+        return []
+
+    avg_rule = met_cfg.get("temporal_averaging", {}).get("temp_humidity", "15T")
+    lw = plot_cfg.get("line_width", 1.5)
+    fig, axes = _met_tower_subplot_layout(len(heights), plot_cfg)
+    all_stats = []
+
+    for i, h in enumerate(heights):
+        ax = axes[i, 0]
+        obs_s = tower_obs["air_temperature"].get(h)
+        palm_s = palm_data.get(("ta", h))
+        icon_s = icon_data.get(("air_temperature", h)) if icon_data else None
+
+        obs_rs, palm_rs, stats = _align_tower_to_palm(obs_s, palm_s, avg_rule)
+
+        palm_z = met_cfg["height_to_palm_z"].get(h, h)
+        if obs_rs is not None:
+            ax.plot(obs_rs.index, obs_rs.values, color=TOL_BLUE, lw=lw,
+                    label=f"Tower {h}m", zorder=3)
+        if palm_rs is not None:
+            ax.plot(palm_rs.index, palm_rs.values, color=TOL_RED, lw=lw,
+                    ls="--", label=f"PALM z={palm_z}m", zorder=2)
+        if icon_s is not None:
+            ax.plot(icon_s.index, icon_s.values, color=TOL_GREEN, lw=lw * 0.8,
+                    ls=":", label="ICON-D2", zorder=1, alpha=0.7)
+
+        _annotate_stats(ax, stats, plot_cfg)
+        ax.set_ylabel("Temperature [\u00b0C]")
+        ax.set_title(f"Air Temperature — {h}m",
+                     fontsize=plot_cfg.get("tick_size", 8), loc="left")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%H:%M"))
+
+        all_stats.append({
+            "variable": "air_temperature", "height_m": h,
+            "palm_z_m": palm_z, **stats,
+        })
+        stats_list.append(all_stats[-1])
+
+    axes[0, 0].legend(loc="upper right", ncol=3, frameon=True,
+                       fancybox=False, edgecolor="#CCCCCC", framealpha=0.9)
+    axes[-1, 0].set_xlabel("Time (UTC)")
+    fig.suptitle("Met Tower Temperature: Obs vs PALM",
+                  fontsize=plot_cfg.get("title_size", 10))
+    fig.tight_layout()
+    _save_figure(fig, outdir, "met_tower_temperature", plot_cfg)
+    return all_stats
+
+
+def plot_met_tower_humidity(tower_obs, palm_data, icon_data, stats_list,
+                             plot_cfg, outdir, met_cfg):
+    """Plot met tower relative humidity comparison."""
+    heights = sorted(set(tower_obs.get("relative_humidity", {}).keys()))
+    if not heights:
+        print("  [SKIP] No humidity observations loaded")
+        return []
+
+    avg_rule = met_cfg.get("temporal_averaging", {}).get("temp_humidity", "15T")
+    lw = plot_cfg.get("line_width", 1.5)
+    fig, axes = _met_tower_subplot_layout(len(heights), plot_cfg)
+    all_stats = []
+
+    for i, h in enumerate(heights):
+        ax = axes[i, 0]
+        obs_s = tower_obs["relative_humidity"].get(h)
+        palm_s = palm_data.get(("rh", h))
+        icon_s = icon_data.get(("relative_humidity", h)) if icon_data else None
+
+        obs_rs, palm_rs, stats = _align_tower_to_palm(obs_s, palm_s, avg_rule)
+
+        palm_z = met_cfg["height_to_palm_z"].get(h, h)
+        if obs_rs is not None:
+            ax.plot(obs_rs.index, obs_rs.values, color=TOL_BLUE, lw=lw,
+                    label=f"Tower {h}m", zorder=3)
+        if palm_rs is not None:
+            ax.plot(palm_rs.index, palm_rs.values, color=TOL_RED, lw=lw,
+                    ls="--", label=f"PALM z={palm_z}m", zorder=2)
+        if icon_s is not None:
+            ax.plot(icon_s.index, icon_s.values, color=TOL_GREEN, lw=lw * 0.8,
+                    ls=":", label="ICON-D2", zorder=1, alpha=0.7)
+
+        _annotate_stats(ax, stats, plot_cfg)
+        ax.set_ylabel("Relative humidity [%]")
+        ax.set_title(f"Relative Humidity — {h}m",
+                     fontsize=plot_cfg.get("tick_size", 8), loc="left")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%H:%M"))
+
+        all_stats.append({
+            "variable": "relative_humidity", "height_m": h,
+            "palm_z_m": palm_z, **stats,
+        })
+        stats_list.append(all_stats[-1])
+
+    axes[0, 0].legend(loc="upper right", ncol=3, frameon=True,
+                       fancybox=False, edgecolor="#CCCCCC", framealpha=0.9)
+    axes[-1, 0].set_xlabel("Time (UTC)")
+    fig.suptitle("Met Tower Humidity: Obs vs PALM",
+                  fontsize=plot_cfg.get("title_size", 10))
+    fig.tight_layout()
+    _save_figure(fig, outdir, "met_tower_humidity", plot_cfg)
+    return all_stats
+
+
+def plot_met_tower_wind(tower_obs, palm_data, icon_data, stats_list,
+                         plot_cfg, outdir, met_cfg):
+    """Plot met tower wind speed and direction comparison.
+
+    Wind speed: standard time series.
+    Wind direction: circular time series with 0-360 y-axis.
+    """
+    ws_heights = sorted(set(tower_obs.get("wind_speed", {}).keys()))
+    wd_heights = sorted(set(tower_obs.get("wind_direction", {}).keys()))
+    n_panels = len(ws_heights) + len(wd_heights)
+    if n_panels == 0:
+        print("  [SKIP] No wind observations loaded")
+        return []
+
+    avg_rule = met_cfg.get("temporal_averaging", {}).get("wind", "15T")
+    lw = plot_cfg.get("line_width", 1.5)
+    fig, axes = _met_tower_subplot_layout(n_panels, plot_cfg)
+    all_stats = []
+    panel = 0
+
+    # Wind speed panels
+    for h in ws_heights:
+        ax = axes[panel, 0]
+        obs_s = tower_obs["wind_speed"].get(h)
+        palm_s = palm_data.get(("wspeed", h))
+        icon_s = icon_data.get(("wind_speed", h)) if icon_data else None
+
+        obs_rs, palm_rs, stats = _align_tower_to_palm(obs_s, palm_s, avg_rule)
+
+        palm_z = met_cfg["height_to_palm_z"].get(h, h)
+        if obs_rs is not None:
+            ax.plot(obs_rs.index, obs_rs.values, color=TOL_BLUE, lw=lw,
+                    label=f"Tower {h}m", zorder=3)
+        if palm_rs is not None:
+            ax.plot(palm_rs.index, palm_rs.values, color=TOL_RED, lw=lw,
+                    ls="--", label=f"PALM z={palm_z}m", zorder=2)
+        if icon_s is not None:
+            ax.plot(icon_s.index, icon_s.values, color=TOL_GREEN, lw=lw * 0.8,
+                    ls=":", label="ICON-D2", zorder=1, alpha=0.7)
+
+        _annotate_stats(ax, stats, plot_cfg)
+        ax.set_ylabel("Wind speed [m/s]")
+        ax.set_title(f"Wind Speed — {h}m",
+                     fontsize=plot_cfg.get("tick_size", 8), loc="left")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%H:%M"))
+
+        all_stats.append({
+            "variable": "wind_speed", "height_m": h,
+            "palm_z_m": palm_z, **stats,
+        })
+        stats_list.append(all_stats[-1])
+        panel += 1
+
+    # Wind direction panels
+    for h in wd_heights:
+        ax = axes[panel, 0]
+        obs_s = tower_obs["wind_direction"].get(h)
+        palm_s = palm_data.get(("wdir", h))
+        icon_s = icon_data.get(("wind_direction", h)) if icon_data else None
+
+        # For wind direction, use circular mean for resampling
+        obs_rs = _circular_resample(obs_s, avg_rule) if obs_s is not None else None
+        palm_rs = palm_s
+
+        # Circular statistics for direction
+        if obs_rs is not None and palm_rs is not None:
+            common = obs_rs.index.intersection(palm_rs.index).sort_values()
+            if len(common) >= 3:
+                o = obs_rs.reindex(common).values
+                s = palm_rs.reindex(common).values
+                stats = _circular_statistics(o, s)
+            else:
+                stats = {"rmse": np.nan, "mbe": np.nan, "r": np.nan,
+                         "kge": np.nan, "nse": np.nan, "n_valid": 0}
+        else:
+            stats = {"rmse": np.nan, "mbe": np.nan, "r": np.nan,
+                     "kge": np.nan, "nse": np.nan, "n_valid": 0}
+
+        palm_z = met_cfg["height_to_palm_z"].get(h, h)
+        if obs_rs is not None:
+            ax.plot(obs_rs.index, obs_rs.values, color=TOL_BLUE, lw=lw,
+                    label=f"Tower {h}m", zorder=3, marker=".", markersize=2,
+                    linestyle="none")
+        if palm_rs is not None:
+            ax.plot(palm_rs.index, palm_rs.values, color=TOL_RED, lw=lw,
+                    label=f"PALM z={palm_z}m", zorder=2, marker=".",
+                    markersize=2, linestyle="none")
+        if icon_s is not None:
+            ax.plot(icon_s.index, icon_s.values, color=TOL_GREEN,
+                    marker=".", markersize=2, linestyle="none",
+                    label="ICON-D2", zorder=1, alpha=0.7)
+
+        ax.set_ylim(0, 360)
+        ax.set_yticks([0, 90, 180, 270, 360])
+        ax.set_yticklabels(["N", "E", "S", "W", "N"])
+        _annotate_stats(ax, stats, plot_cfg)
+        ax.set_ylabel("Wind direction")
+        ax.set_title(f"Wind Direction — {h}m",
+                     fontsize=plot_cfg.get("tick_size", 8), loc="left")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%H:%M"))
+
+        all_stats.append({
+            "variable": "wind_direction", "height_m": h,
+            "palm_z_m": palm_z, **stats,
+        })
+        stats_list.append(all_stats[-1])
+        panel += 1
+
+    axes[0, 0].legend(loc="upper right", ncol=3, frameon=True,
+                       fancybox=False, edgecolor="#CCCCCC", framealpha=0.9)
+    axes[-1, 0].set_xlabel("Time (UTC)")
+    fig.suptitle("Met Tower Wind: Obs vs PALM",
+                  fontsize=plot_cfg.get("title_size", 10))
+    fig.tight_layout()
+    _save_figure(fig, outdir, "met_tower_wind", plot_cfg)
+    return all_stats
+
+
+def _circular_resample(series, rule):
+    """Resample a circular variable (degrees) using vector mean."""
+    if series is None:
+        return None
+    rad = np.deg2rad(series.values)
+    sin_s = pd.Series(np.sin(rad), index=series.index)
+    cos_s = pd.Series(np.cos(rad), index=series.index)
+    sin_m = sin_s.resample(rule).mean()
+    cos_m = cos_s.resample(rule).mean()
+    mean_dir = np.rad2deg(np.arctan2(sin_m, cos_m)) % 360.0
+    return mean_dir.dropna()
+
+
+def _circular_statistics(obs_deg, sim_deg):
+    """Compute circular statistics for wind direction comparison."""
+    n = len(obs_deg)
+    diff = np.mod(sim_deg - obs_deg + 180, 360) - 180
+    rmse = np.sqrt(np.mean(diff ** 2))
+    mbe = np.mean(diff)
+    # Circular correlation using Jammalamadaka & Sarma
+    o_rad = np.deg2rad(obs_deg)
+    s_rad = np.deg2rad(sim_deg)
+    o_mean = np.arctan2(np.mean(np.sin(o_rad)), np.mean(np.cos(o_rad)))
+    s_mean = np.arctan2(np.mean(np.sin(s_rad)), np.mean(np.cos(s_rad)))
+    sin_o = np.sin(o_rad - o_mean)
+    sin_s = np.sin(s_rad - s_mean)
+    denom = np.sqrt(np.sum(sin_o ** 2) * np.sum(sin_s ** 2))
+    r = np.sum(sin_o * sin_s) / denom if denom > 0 else np.nan
+    return {"rmse": rmse, "mbe": mbe, "r": r, "kge": np.nan,
+            "nse": np.nan, "n_valid": n}
+
+
+def plot_met_tower_radiation(tower_obs, palm_data, icon_data, stats_list,
+                              plot_cfg, outdir, met_cfg):
+    """Plot met tower radiation comparison: incoming and outgoing shortwave.
+
+    Shows rsd (incoming) and rsu (outgoing) at available heights, plus
+    derived net radiation Rn = rsd - rsu.
+    """
+    rsd_heights = sorted(set(tower_obs.get("shortwave_down", {}).keys()))
+    rsu_heights = sorted(set(tower_obs.get("shortwave_up", {}).keys()))
+    all_heights = sorted(set(rsd_heights + rsu_heights))
+    if not all_heights:
+        print("  [SKIP] No radiation observations loaded")
+        return []
+
+    avg_rule = met_cfg.get("temporal_averaging", {}).get("radiation", "10T")
+    lw = plot_cfg.get("line_width", 1.5)
+    # 2 panels per height (incoming + outgoing), plus 1 net radiation panel
+    n_panels = len(rsd_heights) + len(rsu_heights) + (1 if rsd_heights and rsu_heights else 0)
+    fig, axes = _met_tower_subplot_layout(n_panels, plot_cfg)
+    all_stats = []
+    panel = 0
+
+    # Shortwave incoming panels
+    net_obs_parts = {}
+    net_palm_parts = {}
+    for h in rsd_heights:
+        ax = axes[panel, 0]
+        obs_s = tower_obs["shortwave_down"].get(h)
+        palm_s = palm_data.get(("rtm_rad_insw_down", h))
+
+        obs_rs, palm_rs, stats = _align_tower_to_palm(obs_s, palm_s, avg_rule)
+
+        palm_z = met_cfg["height_to_palm_z"].get(h, h)
+        if obs_rs is not None:
+            ax.plot(obs_rs.index, obs_rs.values, color=TOL_BLUE, lw=lw,
+                    label=f"Tower {h}m", zorder=3)
+            net_obs_parts.setdefault(h, {})["rsd"] = obs_rs
+        if palm_rs is not None:
+            ax.plot(palm_rs.index, palm_rs.values, color=TOL_RED, lw=lw,
+                    ls="--", label=f"PALM z={palm_z}m", zorder=2)
+            net_palm_parts.setdefault(h, {})["rsd"] = palm_rs
+
+        _annotate_stats(ax, stats, plot_cfg)
+        ax.set_ylabel(r"SW$\downarrow$ [W/m$^2$]")
+        ax.set_title(f"Shortwave Incoming — {h}m",
+                     fontsize=plot_cfg.get("tick_size", 8), loc="left")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%H:%M"))
+
+        all_stats.append({
+            "variable": "shortwave_down", "height_m": h,
+            "palm_z_m": palm_z, **stats,
+        })
+        stats_list.append(all_stats[-1])
+        panel += 1
+
+    # Shortwave outgoing panels
+    for h in rsu_heights:
+        ax = axes[panel, 0]
+        obs_s = tower_obs["shortwave_up"].get(h)
+        palm_s = palm_data.get(("rtm_rad_outsw_down", h))
+
+        obs_rs, palm_rs, stats = _align_tower_to_palm(obs_s, palm_s, avg_rule)
+
+        palm_z = met_cfg["height_to_palm_z"].get(h, h)
+        if obs_rs is not None:
+            ax.plot(obs_rs.index, obs_rs.values, color=TOL_BLUE, lw=lw,
+                    label=f"Tower {h}m", zorder=3)
+            net_obs_parts.setdefault(h, {})["rsu"] = obs_rs
+        if palm_rs is not None:
+            ax.plot(palm_rs.index, palm_rs.values, color=TOL_RED, lw=lw,
+                    ls="--", label=f"PALM z={palm_z}m", zorder=2)
+            net_palm_parts.setdefault(h, {})["rsu"] = palm_rs
+
+        _annotate_stats(ax, stats, plot_cfg)
+        ax.set_ylabel(r"SW$\uparrow$ [W/m$^2$]")
+        ax.set_title(f"Shortwave Outgoing — {h}m",
+                     fontsize=plot_cfg.get("tick_size", 8), loc="left")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%H:%M"))
+
+        all_stats.append({
+            "variable": "shortwave_up", "height_m": h,
+            "palm_z_m": palm_z, **stats,
+        })
+        stats_list.append(all_stats[-1])
+        panel += 1
+
+    # Net radiation panel (first height with both rsd and rsu)
+    if rsd_heights and rsu_heights and panel < n_panels:
+        ax = axes[panel, 0]
+        h_net = rsd_heights[0]
+        obs_rsd = net_obs_parts.get(h_net, {}).get("rsd")
+        obs_rsu = net_obs_parts.get(h_net, {}).get("rsu")
+        palm_rsd = net_palm_parts.get(h_net, {}).get("rsd")
+        palm_rsu = net_palm_parts.get(h_net, {}).get("rsu")
+
+        if obs_rsd is not None and obs_rsu is not None:
+            common_obs = obs_rsd.index.intersection(obs_rsu.index)
+            obs_net = obs_rsd.reindex(common_obs) - obs_rsu.reindex(common_obs)
+            ax.plot(obs_net.index, obs_net.values, color=TOL_BLUE, lw=lw,
+                    label=f"Tower {h_net}m", zorder=3)
+        else:
+            obs_net = None
+
+        if palm_rsd is not None and palm_rsu is not None:
+            common_palm = palm_rsd.index.intersection(palm_rsu.index)
+            palm_net = palm_rsd.reindex(common_palm) - palm_rsu.reindex(common_palm)
+            palm_z = met_cfg["height_to_palm_z"].get(h_net, h_net)
+            ax.plot(palm_net.index, palm_net.values, color=TOL_RED, lw=lw,
+                    ls="--", label=f"PALM z={palm_z}m", zorder=2)
+        else:
+            palm_net = None
+
+        if obs_net is not None and palm_net is not None:
+            common = obs_net.index.intersection(palm_net.index).sort_values()
+            if len(common) >= 3:
+                net_stats = compute_statistics(obs_net.reindex(common).values,
+                                               palm_net.reindex(common).values)
+            else:
+                net_stats = {"rmse": np.nan, "mbe": np.nan, "r": np.nan,
+                             "kge": np.nan, "nse": np.nan, "n_valid": 0}
+        else:
+            net_stats = {"rmse": np.nan, "mbe": np.nan, "r": np.nan,
+                         "kge": np.nan, "nse": np.nan, "n_valid": 0}
+
+        _annotate_stats(ax, net_stats, plot_cfg)
+        ax.set_ylabel(r"R$_{net}$ [W/m$^2$]")
+        ax.set_title(f"Net SW Radiation — {h_net}m",
+                     fontsize=plot_cfg.get("tick_size", 8), loc="left")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%H:%M"))
+
+        all_stats.append({
+            "variable": "net_radiation", "height_m": h_net,
+            "palm_z_m": met_cfg["height_to_palm_z"].get(h_net, h_net),
+            **net_stats,
+        })
+        stats_list.append(all_stats[-1])
+
+    axes[0, 0].legend(loc="upper right", ncol=3, frameon=True,
+                       fancybox=False, edgecolor="#CCCCCC", framealpha=0.9)
+    axes[-1, 0].set_xlabel("Time (UTC)")
+    fig.suptitle("Met Tower Radiation: Obs vs PALM",
+                  fontsize=plot_cfg.get("title_size", 10))
+    fig.tight_layout()
+    _save_figure(fig, outdir, "met_tower_radiation", plot_cfg)
+    return all_stats
+
+
+def export_met_tower_statistics_csv(all_stats, outdir):
+    """Export met tower comparison statistics to CSV."""
+    if not all_stats:
+        print("  No met tower statistics to export.")
+        return
+
+    outpath = Path(outdir) / "met_tower_comparison_statistics.csv"
+    fieldnames = ["variable", "height_m", "palm_z_m",
+                  "rmse", "mbe", "r", "kge", "nse", "n_valid"]
+    with open(outpath, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames,
+                                extrasaction="ignore")
+        writer.writeheader()
+        for row in all_stats:
+            writer.writerow(row)
+    print(f"  Exported: {outpath}")
+
+
+# =============================================================================
 # Phase 3: Comprehensive statistics, Taylor diagram, and heatmap
 # =============================================================================
 
@@ -2477,6 +3324,123 @@ def main():
     if toggles.get("taylor_diagram", False):
         print("  Plotting Taylor diagram ...")
         plot_taylor_diagram(all_comparisons, plot_cfg, plot_dir)
+
+    # ---- Phase 5: Met tower comparison ----
+    met_toggles = [
+        toggles.get("met_tower_temperature", False),
+        toggles.get("met_tower_humidity", False),
+        toggles.get("met_tower_wind", False),
+        toggles.get("met_tower_radiation", False),
+    ]
+
+    met_cfg = cfg.get("met_tower", {})
+    if any(met_toggles) and met_cfg.get("enabled", False):
+        print("\nPhase 5: Loading met tower data ...")
+        tower_data_dir = Path(met_cfg["tower_data_dir"])
+        t_start = cfg["time"]["sim_start"]
+        t_end = cfg["time"]["sim_end"]
+
+        # Load tower CSVs grouped by variable
+        tower_obs = {}
+        for var_name, vcfg in met_cfg.get("variables", {}).items():
+            tower_obs[var_name] = {}
+            for fname, height in zip(vcfg["files"], vcfg["heights_m"]):
+                csv_path = tower_data_dir / fname
+                s = load_tower_csv(csv_path, t_start, t_end)
+                if s is not None:
+                    tower_obs[var_name][height] = s
+                    print(f"    {var_name} {height}m: {len(s)} obs")
+
+        # Load PALM data at met tower grid cell
+        palm_vars = ["ta", "rh", "wspeed", "wdir",
+                     "rtm_rad_insw_down", "rtm_rad_outsw_down"]
+        print("  Loading PALM 3D data for met tower variables ...")
+        palm_3d_met = load_palm_restart_series(
+            paths["palm_output_dir"], paths["palm_job_name"],
+            "av_3d", cfg.get("soil", {}).get("palm_domain", "N02"),
+            variables=palm_vars,
+        )
+
+        palm_cfg_m = cfg["palm"]
+        ix, iy = calculate_met_tower_grid_cell(
+            met_cfg["tower_lat"], met_cfg["tower_lon"],
+            palm_3d_met, palm_cfg_m["origin_E"], palm_cfg_m["origin_N"],
+        )
+
+        palm_tower = extract_palm_at_tower(
+            palm_3d_met, ix, iy, met_cfg["height_to_palm_z"],
+            palm_vars, cfg["time"]["reference_time"],
+        )
+
+        # Load ICON-D2 boundary data if enabled
+        icon_data = None
+        icon_cfg = met_cfg.get("icon_d2", {})
+        if icon_cfg.get("enabled", False) and icon_cfg.get("dynamic_driver_path"):
+            print("  Loading ICON-D2 boundary forcing ...")
+            icon_data = {}
+            for var_name in ("air_temperature", "relative_humidity",
+                             "wind_speed", "wind_direction"):
+                for h in met_cfg["height_to_palm_z"].keys():
+                    h = int(h) if isinstance(h, str) else h
+                    s = load_icon_d2_boundary_mean(
+                        icon_cfg["dynamic_driver_path"], var_name, h,
+                        t_start, t_end,
+                    )
+                    if s is not None:
+                        icon_data[(var_name, h)] = s
+
+        all_met_stats = []
+        print()
+
+    if toggles.get("met_tower_temperature", False) and met_cfg.get("enabled", False):
+        print("  Plotting met tower temperature ...")
+        plot_met_tower_temperature(
+            tower_obs, palm_tower, icon_data, all_met_stats,
+            plot_cfg, plot_dir, met_cfg,
+        )
+
+    if toggles.get("met_tower_humidity", False) and met_cfg.get("enabled", False):
+        print("  Plotting met tower humidity ...")
+        plot_met_tower_humidity(
+            tower_obs, palm_tower, icon_data, all_met_stats,
+            plot_cfg, plot_dir, met_cfg,
+        )
+
+    if toggles.get("met_tower_wind", False) and met_cfg.get("enabled", False):
+        print("  Plotting met tower wind ...")
+        plot_met_tower_wind(
+            tower_obs, palm_tower, icon_data, all_met_stats,
+            plot_cfg, plot_dir, met_cfg,
+        )
+
+    if toggles.get("met_tower_radiation", False) and met_cfg.get("enabled", False):
+        print("  Plotting met tower radiation ...")
+        plot_met_tower_radiation(
+            tower_obs, palm_tower, icon_data, all_met_stats,
+            plot_cfg, plot_dir, met_cfg,
+        )
+
+    if any(met_toggles) and met_cfg.get("enabled", False):
+        export_met_tower_statistics_csv(all_met_stats, plot_dir)
+
+        # Collect met tower stats into all_comparisons for Phase 3
+        for s in all_met_stats:
+            comp = {
+                "variable": s["variable"],
+                "station_or_sensor": f"Tower {s['height_m']}m",
+                "depth_or_position": f"z={s['palm_z_m']}m",
+                "rmse": s["rmse"],
+                "mbe": s["mbe"],
+                "r": s["r"],
+                "kge": s["kge"],
+                "nse": s["nse"],
+                "n_valid": s["n_valid"],
+                "r_beta": np.nan,
+                "r_gamma": np.nan,
+                "obs_std": np.nan,
+                "sim_std": np.nan,
+            }
+            all_comparisons.append(comp)
 
     # ---- Phase 4: Sap flow / dendrometer ----
     if toggles.get("sap_flow_timeseries", False):

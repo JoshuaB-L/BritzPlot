@@ -1,0 +1,1215 @@
+# Enhanced Meteorological Comparison Analysis Configuration - Publication Quality
+# ===============================================================================
+
+# Variables to analyze in this run
+variables_to_analyze:
+  - air_temperature
+  - relative_humidity
+  - wind_u
+  - wind_v
+  - wind_w
+  - wind_speed
+  - wind_direction
+  - shortwave_down
+  - shortwave_up
+
+# Height mappings between tower measurements and PALM grid coordinates
+height_mappings:
+  - name: "2m"
+    tower_height: 2.0
+    palm_z_coordinate: 19.5
+    label_suffix: "2m"
+  - name: "3m"
+    tower_height: 2.5  # Actual sensor height for wind measurements
+    palm_z_coordinate: 20.5
+    label_suffix: "3m"
+  - name: "8m"
+    tower_height: 8.0
+    palm_z_coordinate: 25.5
+    label_suffix: "8m"
+  - name: "10m"
+    tower_height: 10.0
+    palm_z_coordinate: 27.5
+    label_suffix: "10m"
+
+# Output Configuration for Publication Quality
+output:
+  directory: "./results-v1_006"
+  show_plot: false
+  
+  # Multiple format support for academic publishing
+  png_enabled: true      # High-resolution PNG for manuscripts
+  pdf_enabled: true      # Vector PDF for publications (editable text)
+  svg_enabled: true      # Scalable vector graphics (editable text)
+  dpi: 300               # Publication-quality resolution
+
+# Analysis Configuration  
+analysis:
+  start_time: "2024-09-04 00:00:00"
+  end_time: "2024-09-05 00:00:00"
+  
+  # Comparison pairs for statistics generation
+  comparison_pairs:
+    # Air Temperature Comparisons
+    - reference: "Tower 10m_air_temperature"
+      comparison: "PALM New 10m_air_temperature"
+    - reference: "Tower 8m_air_temperature"
+      comparison: "PALM New 8m_air_temperature"
+    - reference: "Tower 2m E14071_air_temperature"
+      comparison: "PALM New 2m_air_temperature"
+    - reference: "Tower 10m_air_temperature"
+      comparison: "ICON-D2 10m_air_temperature"
+    - reference: "Tower 8m_air_temperature"
+      comparison: "ICON-D2 8m_air_temperature"
+    - reference: "Tower 2m E14071_air_temperature"
+      comparison: "ICON-D2 2m_air_temperature"
+    - reference: "PALM New 10m_air_temperature"
+      comparison: "ICON-D2 10m_air_temperature"
+    - reference: "PALM New 8m_air_temperature"
+      comparison: "ICON-D2 8m_air_temperature"
+    - reference: "PALM New 2m_air_temperature"
+      comparison: "ICON-D2 2m_air_temperature"
+    
+    # Relative Humidity Comparisons
+    - reference: "Tower 10m_relative_humidity"
+      comparison: "PALM New 10m_relative_humidity"
+    - reference: "Tower 8m_relative_humidity"
+      comparison: "PALM New 8m_relative_humidity"
+    - reference: "Tower 2m E14071_relative_humidity"
+      comparison: "PALM New 2m_relative_humidity"
+    - reference: "Tower 10m_relative_humidity"
+      comparison: "ICON-D2 10m_relative_humidity"
+    - reference: "Tower 8m_relative_humidity"
+      comparison: "ICON-D2 8m_relative_humidity"
+    - reference: "Tower 2m E14071_relative_humidity"
+      comparison: "ICON-D2 2m_relative_humidity"
+    - reference: "PALM New 10m_relative_humidity"
+      comparison: "ICON-D2 10m_relative_humidity"
+    - reference: "PALM New 8m_relative_humidity"
+      comparison: "ICON-D2 8m_relative_humidity"
+    - reference: "PALM New 2m_relative_humidity"
+      comparison: "ICON-D2 2m_relative_humidity"
+    
+    # Wind Component Comparisons
+    - reference: "Tower 10m_wind_u"
+      comparison: "PALM New 10m_wind_u"
+    - reference: "Tower 10m_wind_v"
+      comparison: "PALM New 10m_wind_v"
+    - reference: "Tower 10m_wind_w"
+      comparison: "PALM New 10m_wind_w"
+    - reference: "Tower 3m_wind_u"
+      comparison: "PALM New 3m_wind_u"
+    - reference: "Tower 3m_wind_v"
+      comparison: "PALM New 3m_wind_v"
+    - reference: "Tower 3m_wind_w"
+      comparison: "PALM New 3m_wind_w"
+    - reference: "Tower 10m_wind_u"
+      comparison: "ICON-D2 10m_wind_u"
+    - reference: "Tower 10m_wind_v"
+      comparison: "ICON-D2 10m_wind_v"
+    - reference: "Tower 10m_wind_w"
+      comparison: "ICON-D2 10m_wind_w"
+    - reference: "Tower 3m_wind_u"
+      comparison: "ICON-D2 3m_wind_u"
+    - reference: "Tower 3m_wind_v"
+      comparison: "ICON-D2 3m_wind_v"
+    - reference: "Tower 3m_wind_w"
+      comparison: "ICON-D2 3m_wind_w"
+    - reference: "PALM New 10m_wind_u"
+      comparison: "ICON-D2 10m_wind_u"
+    - reference: "PALM New 10m_wind_v"
+      comparison: "ICON-D2 10m_wind_v"
+    - reference: "PALM New 10m_wind_w"
+      comparison: "ICON-D2 10m_wind_w"
+    - reference: "PALM New 3m_wind_u"
+      comparison: "ICON-D2 3m_wind_u"
+    - reference: "PALM New 3m_wind_v"
+      comparison: "ICON-D2 3m_wind_v"
+    - reference: "PALM New 3m_wind_w"
+      comparison: "ICON-D2 3m_wind_w"
+    
+    # Wind Speed and Direction Comparisons
+    - reference: "Tower 10m_wind_speed"
+      comparison: "PALM New 10m_wind_speed"
+    - reference: "Tower 3m_wind_speed"
+      comparison: "PALM New 3m_wind_speed"
+    - reference: "Tower 10m_wind_direction"
+      comparison: "PALM New 10m_wind_direction"
+    - reference: "Tower 3m_wind_direction"
+      comparison: "PALM New 3m_wind_direction"
+    - reference: "Tower 10m_wind_speed"
+      comparison: "ICON-D2 10m_wind_speed"
+    - reference: "Tower 3m_wind_speed"
+      comparison: "ICON-D2 3m_wind_speed"
+    - reference: "Tower 10m_wind_direction"
+      comparison: "ICON-D2 10m_wind_direction"
+    - reference: "Tower 3m_wind_direction"
+      comparison: "ICON-D2 3m_wind_direction"
+    - reference: "PALM New 10m_wind_speed"
+      comparison: "ICON-D2 10m_wind_speed"
+    - reference: "PALM New 3m_wind_speed"
+      comparison: "ICON-D2 3m_wind_speed"
+    - reference: "PALM New 10m_wind_direction"
+      comparison: "ICON-D2 10m_wind_direction"
+    - reference: "PALM New 3m_wind_direction"
+      comparison: "ICON-D2 3m_wind_direction"
+    
+    # Radiation Comparisons (Note: ICON-D2 does not provide radiation data)
+    - reference: "Tower 8m_shortwave_down"
+      comparison: "PALM New 8m_shortwave_down"
+    - reference: "Tower 2m_shortwave_down"
+      comparison: "PALM New 2m_shortwave_down"
+    - reference: "Tower 8m_shortwave_up"
+      comparison: "PALM New 8m_shortwave_up"
+    - reference: "Tower 2m_shortwave_up"
+      comparison: "PALM New 2m_shortwave_up"
+
+# Data Sources Configuration
+data_sources:
+  
+  # Tower observation data
+  tower_data:
+    default_time_window:
+      start_time: "2024-09-04 00:00:00"
+      end_time: "2024-09-05 00:00:00"
+    
+    # Time averaging configuration for tower measurements
+    temporal_averaging:
+      enabled: true
+      
+      variable_groups:
+        temperature_humidity:
+          frequency: "15T"
+          method: "mean"
+          min_periods: 8
+          
+        wind_dynamics:
+          frequency: "15T"
+          method: "mean"
+          min_periods: 8
+          
+        radiation:
+          frequency: "10T"
+          method: "mean"
+          min_periods: 5
+      
+      default:
+        frequency: "30T"
+        method: "mean"
+        min_periods: 15
+    
+    sources:
+      # Air Temperature Sources
+      - label: "Tower 10m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_ta_10m.csv"
+        variables: ["air_temperature"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 8m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_ta_8m.csv"
+        variables: ["air_temperature"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 2m E14071"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_ta_2m_E14071.csv"
+        variables: ["air_temperature"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 2m E16534"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_ta_2m_E16534.csv"
+        variables: ["air_temperature"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      # Relative Humidity Sources
+      - label: "Tower 10m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_hur_10m.csv"
+        variables: ["relative_humidity"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 8m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_hur_8m.csv"
+        variables: ["relative_humidity"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 2m E14071"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_hur_2m_E14071.csv"
+        variables: ["relative_humidity"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 2m E16534"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_hur_2m_E16534.csv"
+        variables: ["relative_humidity"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      # Wind Components Sources
+      - label: "Tower 10m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_ua_10m.csv"
+        variables: ["wind_u"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 10m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_va_10m.csv"
+        variables: ["wind_v"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 10m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_w_10m.csv"
+        variables: ["wind_w"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 3m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_ua_3m.csv"
+        variables: ["wind_u"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 3m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_va_3m.csv"
+        variables: ["wind_v"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 3m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_w_3m.csv"
+        variables: ["wind_w"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      # Wind Speed and Direction Sources
+      - label: "Tower 10m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_wspeed_10m.csv"
+        variables: ["wind_speed"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 10m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_wdir_10m.csv"
+        variables: ["wind_direction"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 3m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_wspeed_3m.csv"
+        variables: ["wind_speed"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 3m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_wdir_3m.csv"
+        variables: ["wind_direction"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      # Radiation Sources
+      - label: "Tower 8m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_rsd_8m.csv"
+        variables: ["shortwave_down"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 2m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_rsd_2m.csv"
+        variables: ["shortwave_down"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 8m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_rsu_8m.csv"
+        variables: ["shortwave_up"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      - label: "Tower 2m"
+        filepath: "/mnt/g/My Drive/Bath-Uni/PhD/Structure/Paper-4-PALM-PCM-Study/Data/Britz_TUB/Fred/Tower_10m/level_0/meteo_data_csv/britz_rsu_2m.csv"
+        variables: ["shortwave_up"]
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+  
+  # ICON-D2 Dynamic Driver Data (Boundary Conditions) - Fixed Integration
+  dynamic_driver:
+    default_time_window:
+      start_time: "2024-09-04 00:00:00"
+      end_time: "2024-09-05 00:00:00"
+
+    sources:
+      # 10m height dynamic driver sources
+      - label: "ICON-D2 10m"
+        filepath: "/mnt/f/phd/paper_4/cases/pcm_study_britz_stretch_snap_10m_2024090400/INPUT/pcm_study_britz_stretch_snap_10m_2024090400_dynamic"
+        variables: ["air_temperature", "relative_humidity", "wind_u", "wind_v", "wind_w", "wind_speed", "wind_direction"]
+        coordinates:
+          z: 10.0
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      # 8m height dynamic driver sources
+      - label: "ICON-D2 8m"
+        filepath: "/mnt/f/phd/paper_4/cases/pcm_study_britz_stretch_snap_10m_2024090400/INPUT/pcm_study_britz_stretch_snap_10m_2024090400_dynamic"
+        variables: ["air_temperature", "relative_humidity", "wind_u", "wind_v", "wind_w", "wind_speed", "wind_direction"]
+        coordinates:
+          z: 8.0
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      # 3m height dynamic driver sources
+      - label: "ICON-D2 3m"
+        filepath: "/mnt/f/phd/paper_4/cases/pcm_study_britz_stretch_snap_10m_2024090400/INPUT/pcm_study_britz_stretch_snap_10m_2024090400_dynamic"
+        variables: ["air_temperature", "relative_humidity", "wind_u", "wind_v", "wind_w", "wind_speed", "wind_direction"]
+        coordinates:
+          z: 3.0
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+      
+      # 2m height dynamic driver sources
+      - label: "ICON-D2 2m"
+        filepath: "/mnt/f/phd/paper_4/cases/pcm_study_britz_stretch_snap_10m_2024090400/INPUT/pcm_study_britz_stretch_snap_10m_2024090400_dynamic"
+        variables: ["air_temperature", "relative_humidity", "wind_u", "wind_v", "wind_w", "wind_speed", "wind_direction"]
+        coordinates:
+          z: 2.0
+        time_window:
+          start_time: "2024-09-04 00:00:00"
+          end_time: "2024-09-05 00:00:00"
+  
+  # PALM simulation cases with multi-file support
+  palm_simulations:
+    - name: "new_case"
+      reference_time: "2024-09-04 00:00:00"
+      frequency: "15min"
+      
+      files:
+        main_3d: "/mnt/f/phd/paper_4/cases/pcm_study_britz_stretch_snap_10m_2024090400/OUTPUT/merged_files/pcm_study_britz_stretch_snap_10m_2024090400_av_3d_N02_merged.nc"
+        masked: "/mnt/f/phd/paper_4/cases/pcm_study_britz_stretch_snap_10m_2024090400/OUTPUT/merged_files/pcm_study_britz_stretch_snap_10m_2024090400_av_masked_N02_M001_merged.nc"
+        profile: "/mnt/f/phd/paper_4/cases/pcm_study_britz_stretch_snap_10m_2024090400/OUTPUT/merged_files/pcm_study_britz_stretch_snap_10m_2024090400_pr_N02_merged.nc"
+      
+      time_series_generation:
+        extend_to_end_time: true
+        method: "pad_with_last_value"
+        alignment_strategy: "actual_timestamps"
+        timestamp_extraction:
+          enabled: true
+          fallback_to_generated: true
+          tolerance_minutes: 2.5
+      
+      temporal_averaging:
+        enabled: false
+        target_frequency: "1H"
+        method: "mean"
+      
+      default_time_window:
+        start_time: "2024-09-04 00:00:00"
+        end_time: "2024-09-05 00:00:00"
+      
+      sources:
+        # 10m level sources
+        - label: "PALM New 10m"
+          filepath: "/mnt/f/phd/paper_4/cases/pcm_study_britz_stretch_snap_10m_2024090400/OUTPUT/merged_files/pcm_study_britz_stretch_snap_10m_2024090400_av_3d_N02_merged.nc"
+          variables: ["air_temperature", "relative_humidity", "wind_u", "wind_v", "wind_w", "wind_speed", "wind_direction", "shortwave_down", "shortwave_up"]
+          coordinates:
+            x: 89.0
+            y: 98.0
+            z: 27.5
+          time_window:
+            start_time: "2024-09-04 00:00:00"
+            end_time: "2024-09-05 00:00:00"
+        
+        # 8m level sources
+        - label: "PALM New 8m"
+          filepath: "/mnt/f/phd/paper_4/cases/pcm_study_britz_stretch_snap_10m_2024090400/OUTPUT/merged_files/pcm_study_britz_stretch_snap_10m_2024090400_av_3d_N02_merged.nc"
+          variables: ["air_temperature", "relative_humidity", "wind_u", "wind_v", "wind_w", "wind_speed", "wind_direction", "shortwave_down", "shortwave_up"]
+          coordinates:
+            x: 89.0
+            y: 98.0
+            z: 25.5
+          time_window:
+            start_time: "2024-09-04 00:00:00"
+            end_time: "2024-09-05 00:00:00"
+        
+        # 3m level sources
+        - label: "PALM New 3m"
+          filepath: "/mnt/f/phd/paper_4/cases/pcm_study_britz_stretch_snap_10m_2024090400/OUTPUT/merged_files/pcm_study_britz_stretch_snap_10m_2024090400_av_3d_N02_merged.nc"
+          variables: ["wind_u", "wind_v", "wind_w", "wind_speed", "wind_direction"]
+          coordinates:
+            x: 89.0
+            y: 98.0
+            z: 20.5
+          time_window:
+            start_time: "2024-09-04 00:00:00"
+            end_time: "2024-09-05 00:00:00"
+        
+        # 2m level sources
+        - label: "PALM New 2m"
+          filepath: "/mnt/f/phd/paper_4/cases/pcm_study_britz_stretch_snap_10m_2024090400/OUTPUT/merged_files/pcm_study_britz_stretch_snap_10m_2024090400_av_3d_N02_merged.nc"
+          variables: ["air_temperature", "relative_humidity", "shortwave_down", "shortwave_up"]
+          coordinates:
+            x: 89.0
+            y: 98.0
+            z: 19.5
+          time_window:
+            start_time: "2024-09-04 00:00:00"
+            end_time: "2024-09-05 00:00:00"
+
+# Publication-Quality Plotting Configuration with Vibrant Color Scheme
+plotting:
+  show_plot: false
+  
+  # Statistics box configuration
+  statistics_box:
+    enabled: true
+    position: "top_right"
+    font_size: 8
+    background_alpha: 0.95
+    border_color: "black"
+    padding: 2.0
+  
+  # Publication-quality styling with vibrant color palette inspired by reference images
+  # Color scheme: Deep blues, vibrant purples/magentas, coral accents, teal highlights
+  styles:
+    # ===== TOWER DATA STYLES (SOLID LINES) =====
+    # Temperature Tower Sources - Deep Blues Palette
+    "Tower 10m_air_temperature":
+      color: "#1B4D72"  # Deep blue
+      marker: "o"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 4
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 8m_air_temperature":
+      color: "#2E5C8A"  # Medium blue
+      marker: "s"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 4
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 2m E14071_air_temperature":
+      color: "#4169A3"  # Bright blue
+      marker: "^"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 5
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 2m E16534_air_temperature":
+      color: "#5A7BC1"  # Light blue
+      marker: "v"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 5
+      markevery: 25
+      alpha: 1.0
+    
+    # Humidity Tower Sources - Matching blues
+    "Tower 10m_relative_humidity":
+      color: "#1B4D72"
+      marker: "o"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 4
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 8m_relative_humidity":
+      color: "#2E5C8A"
+      marker: "s"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 4
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 2m E14071_relative_humidity":
+      color: "#4169A3"
+      marker: "^"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 5
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 2m E16534_relative_humidity":
+      color: "#5A7BC1"
+      marker: "v"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 5
+      markevery: 25
+      alpha: 1.0
+    
+    # Wind Tower Sources - Coral/Salmon Palette
+    "Tower 10m_wind_u":
+      color: "#FF6B6B"  # Vibrant coral
+      marker: "o"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 4
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 3m_wind_u":
+      color: "#FF8E8E"  # Light coral
+      marker: "s"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 4
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 10m_wind_v":
+      color: "#E74C3C"  # Deep coral
+      marker: "^"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 5
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 3m_wind_v":
+      color: "#EC7063"  # Medium coral
+      marker: "v"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 5
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 10m_wind_w":
+      color: "#C0392B"  # Dark coral
+      marker: "D"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 4
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 3m_wind_w":
+      color: "#D5756D"  # Light coral variant
+      marker: "P"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 5
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 10m_wind_speed":
+      color: "#FF6B6B"
+      marker: "o"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 4
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 3m_wind_speed":
+      color: "#FF8E8E"
+      marker: "s"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 4
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 10m_wind_direction":
+      color: "#E74C3C"
+      marker: "^"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 5
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 3m_wind_direction":
+      color: "#EC7063"
+      marker: "v"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 5
+      markevery: 25
+      alpha: 1.0
+    
+    # Radiation Tower Sources - Teal Palette
+    "Tower 8m_shortwave_down":
+      color: "#14B8A6"  # Vibrant teal
+      marker: "s"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 4
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 2m_shortwave_down":
+      color: "#0D9488"  # Deep teal
+      marker: "^"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 5
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 8m_shortwave_up":
+      color: "#2DD4BF"  # Bright teal
+      marker: "v"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 5
+      markevery: 25
+      alpha: 1.0
+    
+    "Tower 2m_shortwave_up":
+      color: "#5EEAD4"  # Light teal
+      marker: "D"
+      linestyle: "-"
+      linewidth: 1.2
+      markersize: 4
+      markevery: 25
+      alpha: 1.0
+    
+    # ===== PALM DATA STYLES (DASHED LINES) - Purple/Magenta Palette =====
+    "PALM New 10m_air_temperature":
+      color: "#8B3F9B"  # Deep purple
+      marker: "h"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 8m_air_temperature":
+      color: "#A855C4"  # Medium purple
+      marker: "H"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 2m_air_temperature":
+      color: "#C084D1"  # Light purple
+      marker: "8"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 10m_relative_humidity":
+      color: "#8B3F9B"
+      marker: "h"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 8m_relative_humidity":
+      color: "#A855C4"
+      marker: "H"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 2m_relative_humidity":
+      color: "#C084D1"
+      marker: "8"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 10m_wind_u":
+      color: "#8B3F9B"
+      marker: "h"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 3m_wind_u":
+      color: "#A855C4"
+      marker: "H"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 8m_wind_u":
+      color: "#A855C4"
+      marker: "H"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 10m_wind_v":
+      color: "#C084D1"
+      marker: "8"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 3m_wind_v":
+      color: "#DB2777"  # Vibrant magenta
+      marker: "P"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 8m_wind_v":
+      color: "#C084D1"
+      marker: "8"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 10m_wind_w":
+      color: "#E879F9"  # Light magenta
+      marker: "*"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 8
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 3m_wind_w":
+      color: "#F472B6"  # Bright pink
+      marker: "X"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 7
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 8m_wind_w":
+      color: "#DB2777"
+      marker: "P"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 10m_wind_speed":
+      color: "#8B3F9B"
+      marker: "h"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 3m_wind_speed":
+      color: "#A855C4"
+      marker: "H"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 8m_wind_speed":
+      color: "#A855C4"
+      marker: "H"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 10m_wind_direction":
+      color: "#C084D1"
+      marker: "8"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 3m_wind_direction":
+      color: "#DB2777"
+      marker: "P"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 8m_wind_direction":
+      color: "#C084D1"
+      marker: "8"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    # PALM Radiation Sources
+    "PALM New 8m_shortwave_down":
+      color: "#A855C4"
+      marker: "H"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 2m_shortwave_down":
+      color: "#C084D1"
+      marker: "8"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 10m_shortwave_down":
+      color: "#8B3F9B"
+      marker: "h"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 8m_shortwave_up":
+      color: "#DB2777"
+      marker: "P"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 2m_shortwave_up":
+      color: "#E879F9"
+      marker: "*"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 8
+      markevery: 15
+      alpha: 0.9
+    
+    "PALM New 10m_shortwave_up":
+      color: "#A855C4"
+      marker: "H"
+      linestyle: "--"
+      linewidth: 1.4
+      markersize: 6
+      markevery: 15
+      alpha: 0.9
+    
+    # ===== ICON-D2 DATA STYLES (DOT-DASH LINES) - Accent Colors =====
+    "ICON-D2 10m_air_temperature":
+      color: "#EC4899"  # Vibrant pink
+      marker: "1"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 8m_air_temperature":
+      color: "#F59E0B"  # Amber
+      marker: "2"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 3m_air_temperature":
+      color: "#EF4444"  # Red
+      marker: "3"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 2m_air_temperature":
+      color: "#8B5CF6"  # Violet
+      marker: "4"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 10m_relative_humidity":
+      color: "#EC4899"
+      marker: "1"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 8m_relative_humidity":
+      color: "#F59E0B"
+      marker: "2"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 3m_relative_humidity":
+      color: "#EF4444"
+      marker: "3"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 2m_relative_humidity":
+      color: "#8B5CF6"
+      marker: "4"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 10m_wind_u":
+      color: "#EC4899"
+      marker: "1"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 3m_wind_u":
+      color: "#F59E0B"
+      marker: "2"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 8m_wind_u":
+      color: "#F59E0B"
+      marker: "2"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 2m_wind_u":
+      color: "#EF4444"
+      marker: "3"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 10m_wind_v":
+      color: "#EF4444"
+      marker: "3"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 3m_wind_v":
+      color: "#8B5CF6"
+      marker: "4"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 8m_wind_v":
+      color: "#EF4444"
+      marker: "3"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 2m_wind_v":
+      color: "#8B5CF6"
+      marker: "4"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 10m_wind_w":
+      color: "#10B981"  # Emerald
+      marker: "<"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 3m_wind_w":
+      color: "#06B6D4"  # Cyan
+      marker: ">"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 8m_wind_w":
+      color: "#8B5CF6"
+      marker: "4"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 2m_wind_w":
+      color: "#10B981"
+      marker: "<"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 10m_wind_speed":
+      color: "#EC4899"
+      marker: "1"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 3m_wind_speed":
+      color: "#F59E0B"
+      marker: "2"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 8m_wind_speed":
+      color: "#F59E0B"
+      marker: "2"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 2m_wind_speed":
+      color: "#EF4444"
+      marker: "3"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 10m_wind_direction":
+      color: "#EC4899"
+      marker: "1"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 3m_wind_direction":
+      color: "#F59E0B"
+      marker: "2"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 8m_wind_direction":
+      color: "#F59E0B"
+      marker: "2"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    "ICON-D2 2m_wind_direction":
+      color: "#EF4444"
+      marker: "3"
+      linestyle: "-."
+      linewidth: 1.8
+      markersize: 8
+      markevery: 8
+      alpha: 1.0
+    
+    # Default style for unlisted datasets
+    default:
+      color: "#6B7280"  # Gray
+      marker: "."
+      linestyle: ":"
+      linewidth: 1.0
+      markersize: 3
+      markevery: 30
+      alpha: 0.7
+
+# Logging Configuration
+logging:
+  level: "INFO"
